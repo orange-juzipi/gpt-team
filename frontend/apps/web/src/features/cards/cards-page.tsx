@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Download, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import { Download, KeyRound, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
 
 import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
@@ -353,7 +353,7 @@ export function CardsPage() {
                             }
                             onClick={() => activateMutation.mutate(card.id)}
                           >
-                            <Download className="size-4" />
+                            <KeyRound className="size-4" />
                           </HoverHintButton>
                           <HoverHintButton
                             hint="查询卡密"

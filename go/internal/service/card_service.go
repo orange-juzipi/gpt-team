@@ -178,40 +178,17 @@ func (s *CardService) Activate(ctx context.Context, id uint64) (*CardEventView, 
 	request := map[string]any{"code": card.Code}
 	response, callErr := s.efuncard.Redeem(ctx, card.Code)
 	if callErr != nil {
-		return s.recordFailure(ctx, card.ID, model.CardEventActivate, request, callErr)
+		return s.handleActivateFailure(ctx, &card, request, callErr)
 	}
 
-	now := time.Now().UTC()
-	expiryDate := normalizeExpiryDate(
-		response.Data.ExpiryDate,
-		response.Data.ExpiryMonth,
-		response.Data.ExpiryYear,
-	)
-	card.Status = model.CardStatusActivated
-	card.RemoteStatus = response.Data.Status
-	card.RemoteCardID = &response.Data.CardID
-	card.LastFour = lastFour(response.Data.CardNumber)
-	card.ExpiryDate = expiryDate
-	card.LastSyncedAt = &now
-
-	if err := s.cards.Save(ctx, &card); err != nil {
-		return nil, apperr.Internal("card_save_failed", "failed to save activated card", err)
+	safePayloadData, err := s.persistCardSnapshot(ctx, &card, snapshotFromRedeem(response.Data))
+	if err != nil {
+		return nil, err
 	}
 
 	safePayload := map[string]any{
 		"success": response.Success,
-		"data": sanitizeCardPayload(
-			response.Data.CardID,
-			response.Data.Code,
-			response.Data.Status,
-			response.Data.Balance,
-			response.Data.CreatedAt,
-			response.Data.CardNumber,
-			expiryDate,
-			response.Data.ExpiryMonth,
-			response.Data.ExpiryYear,
-			response.Data.CVV,
-		),
+		"data":    safePayloadData,
 	}
 
 	return s.recordSuccess(ctx, card.ID, model.CardEventActivate, request, safePayload, safePayload)
@@ -229,39 +206,15 @@ func (s *CardService) Query(ctx context.Context, id uint64) (*CardEventView, err
 		return s.recordFailure(ctx, card.ID, model.CardEventQuery, request, callErr)
 	}
 
-	now := time.Now().UTC()
-	expiryDate := normalizeExpiryDate(
-		response.Data.ExpiryDate,
-		response.Data.ExpiryMonth,
-		response.Data.ExpiryYear,
-	)
-	card.Status = model.CardStatusActivated
-	card.RemoteStatus = response.Data.Status
-	card.RemoteCardID = &response.Data.CardID
-	card.LastFour = lastFour(response.Data.CardNumber)
-	card.ExpiryDate = expiryDate
-	card.LastSyncedAt = &now
-
-	if err := s.cards.Save(ctx, &card); err != nil {
-		return nil, apperr.Internal("card_save_failed", "failed to save queried card", err)
+	safePayloadData, err := s.persistCardSnapshot(ctx, &card, snapshotFromQuery(response.Data))
+	if err != nil {
+		return nil, err
 	}
 
 	safePayload := map[string]any{
 		"success": response.Success,
-		"data": sanitizeCardPayload(
-			response.Data.CardID,
-			response.Data.Code,
-			response.Data.Status,
-			response.Data.Balance,
-			response.Data.CreatedAt,
-			response.Data.CardNumber,
-			expiryDate,
-			response.Data.ExpiryMonth,
-			response.Data.ExpiryYear,
-			response.Data.CVV,
-		),
+		"data":    safePayloadData,
 	}
-	safePayloadData, _ := safePayload["data"].(map[string]any)
 	safePayloadData["balance"] = response.Data.Balance
 
 	return s.recordSuccess(ctx, card.ID, model.CardEventQuery, request, safePayload, safePayload)
@@ -394,6 +347,96 @@ func (s *CardService) recordFailure(ctx context.Context, cardID uint64, eventTyp
 	return nil, callErr
 }
 
+func (s *CardService) handleActivateFailure(ctx context.Context, card *model.Card, requestBody any, callErr error) (*CardEventView, error) {
+	if !shouldSyncActivatedCard(callErr) {
+		return s.recordFailure(ctx, card.ID, model.CardEventActivate, requestBody, callErr)
+	}
+
+	response, queryErr := s.efuncard.QueryCard(ctx, card.Code)
+	if queryErr != nil || !response.Success {
+		return s.recordFailure(ctx, card.ID, model.CardEventActivate, requestBody, callErr)
+	}
+
+	snapshot := snapshotFromQuery(response.Data)
+	if !snapshot.hasCoreData() {
+		return s.recordFailure(ctx, card.ID, model.CardEventActivate, requestBody, callErr)
+	}
+
+	safePayloadData, err := s.persistCardSnapshot(ctx, card, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	safePayloadData["balance"] = response.Data.Balance
+
+	responsePayload := map[string]any{
+		"success":    false,
+		"error":      apperr.Message(callErr),
+		"autoSynced": true,
+		"data":       safePayloadData,
+	}
+	normalized := map[string]any{
+		"success":    true,
+		"autoSynced": true,
+		"message":    "激活码已使用，已自动同步卡片状态",
+		"data":       safePayloadData,
+	}
+
+	return s.recordSuccess(ctx, card.ID, model.CardEventActivate, requestBody, responsePayload, normalized)
+}
+
+func (s *CardService) persistCardSnapshot(ctx context.Context, card *model.Card, snapshot cardSnapshot) (map[string]any, error) {
+	expiryDate := normalizeExpiryDate(snapshot.ExpiryDate, snapshot.ExpiryMonth, snapshot.ExpiryYear)
+	now := time.Now().UTC()
+
+	card.Status = model.CardStatusActivated
+	if strings.TrimSpace(snapshot.Status) != "" {
+		card.RemoteStatus = snapshot.Status
+	}
+	if snapshot.CardID != 0 {
+		card.RemoteCardID = &snapshot.CardID
+	}
+	if strings.TrimSpace(snapshot.CardNumber) != "" {
+		card.LastFour = lastFour(snapshot.CardNumber)
+	}
+	if expiryDate != "" {
+		card.ExpiryDate = expiryDate
+	}
+	card.LastSyncedAt = &now
+
+	if err := s.cards.Save(ctx, card); err != nil {
+		return nil, apperr.Internal("card_save_failed", "failed to save card snapshot", err)
+	}
+
+	cardID := snapshot.CardID
+	if cardID == 0 && card.RemoteCardID != nil {
+		cardID = *card.RemoteCardID
+	}
+
+	return sanitizeCardPayload(
+		cardID,
+		firstNonEmpty(snapshot.Code, card.Code),
+		firstNonEmpty(snapshot.Status, card.RemoteStatus),
+		snapshot.Balance,
+		snapshot.CreatedAt,
+		snapshot.CardNumber,
+		firstNonEmpty(expiryDate, card.ExpiryDate),
+		snapshot.ExpiryMonth,
+		snapshot.ExpiryYear,
+		snapshot.CVV,
+	), nil
+}
+
+func shouldSyncActivatedCard(err error) bool {
+	if apperr.Status(err) != 409 {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(apperr.Message(err)))
+	return strings.Contains(message, "已使用") ||
+		strings.Contains(message, "already used") ||
+		strings.Contains(message, "already redeemed")
+}
+
 func mustJSON(value any) string {
 	if value == nil {
 		return "{}"
@@ -413,6 +456,58 @@ func mustJSON(value any) string {
 	}
 
 	return string(body)
+}
+
+type cardSnapshot struct {
+	CardID      uint64
+	CardNumber  string
+	ExpiryDate  string
+	ExpiryMonth int
+	ExpiryYear  int
+	CVV         string
+	Code        string
+	Status      string
+	Balance     float64
+	CreatedAt   string
+}
+
+func snapshotFromRedeem(data efuncard.RedeemData) cardSnapshot {
+	return cardSnapshot{
+		CardID:      data.CardID,
+		CardNumber:  data.CardNumber,
+		ExpiryDate:  data.ExpiryDate,
+		ExpiryMonth: data.ExpiryMonth,
+		ExpiryYear:  data.ExpiryYear,
+		CVV:         data.CVV,
+		Code:        data.Code,
+		Status:      data.Status,
+		Balance:     data.Balance,
+		CreatedAt:   data.CreatedAt,
+	}
+}
+
+func snapshotFromQuery(data efuncard.QueryData) cardSnapshot {
+	return cardSnapshot{
+		CardID:      data.CardID,
+		CardNumber:  data.CardNumber,
+		ExpiryDate:  data.ExpiryDate,
+		ExpiryMonth: data.ExpiryMonth,
+		ExpiryYear:  data.ExpiryYear,
+		CVV:         data.CVV,
+		Code:        data.Code,
+		Status:      data.Status,
+		Balance:     data.Balance,
+		CreatedAt:   data.CreatedAt,
+	}
+}
+
+func (snapshot cardSnapshot) hasCoreData() bool {
+	return snapshot.CardID != 0 ||
+		strings.TrimSpace(snapshot.CardNumber) != "" ||
+		strings.TrimSpace(snapshot.Status) != "" ||
+		strings.TrimSpace(snapshot.ExpiryDate) != "" ||
+		snapshot.ExpiryMonth > 0 ||
+		snapshot.ExpiryYear > 0
 }
 
 func lastFour(cardNumber string) string {
@@ -456,6 +551,16 @@ func sanitizeCardPayload(
 	}
 
 	return payload
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+
+	return ""
 }
 
 func normalizeExpiryDate(expiryDate string, expiryMonth, expiryYear int) string {

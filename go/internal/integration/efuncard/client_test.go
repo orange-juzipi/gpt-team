@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gpt-team-api/internal/apperr"
 )
 
 func TestRedeemSetsAuthorizationHeader(t *testing.T) {
@@ -42,6 +44,27 @@ func TestRedeemMapsConflictStatus(t *testing.T) {
 	client := NewClient(server.URL, "test-key", server.Client())
 	if _, err := client.Redeem(context.Background(), "CDK-1"); err == nil {
 		t.Fatalf("expected conflict error")
+	}
+}
+
+func TestRedeemMapsConflictJSONMessage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"success":false,"error":"激活码已使用"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", server.Client())
+	_, err := client.Redeem(context.Background(), "CDK-1")
+	if err == nil {
+		t.Fatalf("expected conflict error")
+	}
+
+	if apperr.Message(err) != "激活码已使用" {
+		t.Fatalf("expected parsed conflict message, got %q", apperr.Message(err))
 	}
 }
 

@@ -20,29 +20,29 @@ type Client struct {
 }
 
 type RedeemData struct {
-	CardID     uint64  `json:"cardId"`
-	CardNumber string  `json:"cardNumber"`
-	ExpiryDate string  `json:"expiryDate"`
-	ExpiryMonth int    `json:"expiryMonth"`
-	ExpiryYear  int    `json:"expiryYear"`
-	CVV        string  `json:"cvv"`
-	Code       string  `json:"code"`
-	Status     string  `json:"status"`
-	Balance    float64 `json:"balance"`
-	CreatedAt  string  `json:"createdAt"`
+	CardID      uint64  `json:"cardId"`
+	CardNumber  string  `json:"cardNumber"`
+	ExpiryDate  string  `json:"expiryDate"`
+	ExpiryMonth int     `json:"expiryMonth"`
+	ExpiryYear  int     `json:"expiryYear"`
+	CVV         string  `json:"cvv"`
+	Code        string  `json:"code"`
+	Status      string  `json:"status"`
+	Balance     float64 `json:"balance"`
+	CreatedAt   string  `json:"createdAt"`
 }
 
 type QueryData struct {
-	CardID     uint64  `json:"cardId"`
-	CardNumber string  `json:"cardNumber"`
-	ExpiryDate string  `json:"expiryDate"`
-	ExpiryMonth int    `json:"expiryMonth"`
-	ExpiryYear  int    `json:"expiryYear"`
-	CVV        string  `json:"cvv"`
-	Code       string  `json:"code"`
-	Status     string  `json:"status"`
-	Balance    float64 `json:"balance"`
-	CreatedAt  string  `json:"createdAt"`
+	CardID      uint64  `json:"cardId"`
+	CardNumber  string  `json:"cardNumber"`
+	ExpiryDate  string  `json:"expiryDate"`
+	ExpiryMonth int     `json:"expiryMonth"`
+	ExpiryYear  int     `json:"expiryYear"`
+	CVV         string  `json:"cvv"`
+	Code        string  `json:"code"`
+	Status      string  `json:"status"`
+	Balance     float64 `json:"balance"`
+	CreatedAt   string  `json:"createdAt"`
 }
 
 type BillingTransaction struct {
@@ -198,7 +198,7 @@ func doRequest[T any](httpClient *http.Client, request *http.Request) (T, error)
 }
 
 func mapHTTPError(status int, body []byte) error {
-	message := strings.TrimSpace(string(body))
+	message := extractErrorMessage(body)
 	if message == "" {
 		message = http.StatusText(status)
 	}
@@ -215,6 +215,33 @@ func mapHTTPError(status int, body []byte) error {
 		return apperr.New(status, code, message)
 	default:
 		return apperr.Upstream(code, message, nil)
+	}
+}
+
+func extractErrorMessage(body []byte) string {
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		return ""
+	}
+
+	var payload struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Msg     string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return message
+	}
+
+	switch {
+	case strings.TrimSpace(payload.Error) != "":
+		return strings.TrimSpace(payload.Error)
+	case strings.TrimSpace(payload.Message) != "":
+		return strings.TrimSpace(payload.Message)
+	case strings.TrimSpace(payload.Msg) != "":
+		return strings.TrimSpace(payload.Msg)
+	default:
+		return message
 	}
 }
 

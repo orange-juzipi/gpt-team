@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"gpt-team-api/internal/apperr"
 	"gpt-team-api/internal/integration/efuncard"
 	"gpt-team-api/internal/integration/meiguodizhi"
 	"gpt-team-api/internal/model"
@@ -154,6 +155,84 @@ func TestActivateCardStoresSnapshotForDetailView(t *testing.T) {
 	payload := latest[model.CardEventActivate].NormalizedPayload
 	if !containsAll(payload, "4111111111111111", "\"cvv\":\"123\"", "\"lastFour\":\"1111\"") {
 		t.Fatalf("expected card snapshot payload to include card number and cvv, got: %s", payload)
+	}
+}
+
+func TestActivateAlreadyUsedSyncsCardStatusViaQuery(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-USED", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			redeemFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error) {
+				return efuncard.APIResponse[efuncard.RedeemData]{}, apperr.Conflict("efuncard_http_409", "激活码已使用")
+			},
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:      66,
+						CardNumber:  "4242424242424242",
+						CVV:         "456",
+						ExpiryMonth: 9,
+						ExpiryYear:  2029,
+						Code:        code,
+						Status:      "ACTIVE",
+						Balance:     0,
+					},
+				}, nil
+			},
+			billFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+				return efuncard.APIResponse[efuncard.BillingData]{}, nil
+			},
+			threeFn: func(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error) {
+				return efuncard.APIResponse[efuncard.ThreeDSData]{}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	event, err := service.Activate(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("activate card with sync fallback: %v", err)
+	}
+
+	if event == nil || !event.Success {
+		t.Fatalf("expected activation event success after query fallback")
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.Status != model.CardStatusActivated {
+		t.Fatalf("expected fallback query to promote card status, got %s", card.Status)
+	}
+
+	if card.LastFour != "4242" {
+		t.Fatalf("expected last four 4242, got %s", card.LastFour)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventActivate].NormalizedPayload
+	if !containsAll(payload, `"autoSynced":true`, `"message":"激活码已使用，已自动同步卡片状态"`, `"lastFour":"4242"`) {
+		t.Fatalf("expected normalized payload to include fallback sync details, got: %s", payload)
 	}
 }
 
@@ -358,10 +437,10 @@ func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
 				return efuncard.APIResponse[efuncard.BillingData]{
 					Success: true,
 					Data: efuncard.BillingData{
-						CardID:       24119,
-						LastFour:     "2405",
-						Total:        1,
-						SettledCount: 0,
+						CardID:        24119,
+						LastFour:      "2405",
+						Total:         1,
+						SettledCount:  0,
 						SettledAmount: 0,
 						Transactions: []efuncard.BillingTransaction{
 							{
