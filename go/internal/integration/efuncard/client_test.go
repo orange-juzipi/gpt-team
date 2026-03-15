@@ -87,3 +87,23 @@ func TestQueryCardParsesExpiryMonthYear(t *testing.T) {
 		t.Fatalf("unexpected expiry month/year: %+v", response.Data)
 	}
 }
+
+func TestQueryCardParsesPreciseExpiryTime(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"cardId":24119,"cardNumber":"4462220001292405","expiryDate":"03/01","expiryMonth":3,"expiryYear":2029,"expiresAt":"2026-03-16T02:07:48Z","cvv":"421","status":"ACTIVE"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", server.Client())
+	response, err := client.QueryCard(context.Background(), "UK-QUERY")
+	if err != nil {
+		t.Fatalf("query card failed: %v", err)
+	}
+
+	if response.Data.ExpiresAt != "2026-03-16T02:07:48Z" {
+		t.Fatalf("unexpected expiresAt: %+v", response.Data)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,6 +423,7 @@ func (s *CardService) persistCardSnapshot(ctx context.Context, card *model.Card,
 		firstNonEmpty(expiryDate, card.ExpiryDate),
 		snapshot.ExpiryMonth,
 		snapshot.ExpiryYear,
+		snapshot.ExpiresAt,
 		snapshot.CVV,
 	), nil
 }
@@ -464,6 +466,7 @@ type cardSnapshot struct {
 	ExpiryDate  string
 	ExpiryMonth int
 	ExpiryYear  int
+	ExpiresAt   string
 	CVV         string
 	Code        string
 	Status      string
@@ -478,6 +481,7 @@ func snapshotFromRedeem(data efuncard.RedeemData) cardSnapshot {
 		ExpiryDate:  data.ExpiryDate,
 		ExpiryMonth: data.ExpiryMonth,
 		ExpiryYear:  data.ExpiryYear,
+		ExpiresAt:   firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
 		CVV:         data.CVV,
 		Code:        data.Code,
 		Status:      data.Status,
@@ -493,6 +497,7 @@ func snapshotFromQuery(data efuncard.QueryData) cardSnapshot {
 		ExpiryDate:  data.ExpiryDate,
 		ExpiryMonth: data.ExpiryMonth,
 		ExpiryYear:  data.ExpiryYear,
+		ExpiresAt:   firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
 		CVV:         data.CVV,
 		Code:        data.Code,
 		Status:      data.Status,
@@ -523,6 +528,7 @@ func sanitizeCardPayload(
 	balance float64,
 	createdAt, cardNumber, expiryDate string,
 	expiryMonth, expiryYear int,
+	expiresAt string,
 	cvv string,
 ) map[string]any {
 	payload := map[string]any{
@@ -549,6 +555,9 @@ func sanitizeCardPayload(
 	if expiryYear > 0 {
 		payload["expiryYear"] = expiryYear
 	}
+	if expiresAt != "" {
+		payload["expiresAt"] = expiresAt
+	}
 
 	return payload
 }
@@ -564,15 +573,67 @@ func firstNonEmpty(values ...string) string {
 }
 
 func normalizeExpiryDate(expiryDate string, expiryMonth, expiryYear int) string {
-	if strings.TrimSpace(expiryDate) != "" {
-		return strings.TrimSpace(expiryDate)
+	trimmed := strings.TrimSpace(expiryDate)
+	derived := normalizeExpiryMonthYear(expiryMonth, expiryYear)
+	if trimmed == "" {
+		return derived
 	}
 
+	if derived == "" {
+		return trimmed
+	}
+
+	shortExpiry := normalizeShortExpiry(trimmed)
+	if shortExpiry == "" {
+		return derived
+	}
+
+	if shortExpiry != derived {
+		return derived
+	}
+
+	return shortExpiry
+}
+
+func normalizeExpiryMonthYear(expiryMonth, expiryYear int) string {
 	if expiryMonth < 1 || expiryMonth > 12 || expiryYear <= 0 {
 		return ""
 	}
 
 	return fmt.Sprintf("%02d/%02d", expiryMonth, expiryYear%100)
+}
+
+func normalizeShortExpiry(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.Contains(trimmed, "T") || strings.Contains(trimmed, ":") {
+		return ""
+	}
+
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '/' || r == '-'
+	})
+	if len(parts) != 2 {
+		return ""
+	}
+	if len(parts[0]) == 4 || len(parts[1]) == 0 || len(parts[1]) > 4 {
+		return ""
+	}
+
+	month, err := strconv.Atoi(parts[0])
+	if err != nil || month < 1 || month > 12 {
+		return ""
+	}
+
+	year, err := strconv.Atoi(parts[1])
+	if err != nil || year < 0 {
+		return ""
+	}
+
+	if len(parts[1]) == 4 {
+		year %= 100
+	}
+
+	return fmt.Sprintf("%02d/%02d", month, year)
 }
 
 func normalizeBillingPayload(data efuncard.BillingData) map[string]any {

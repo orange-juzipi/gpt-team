@@ -30,6 +30,12 @@ type RedeemData struct {
 	Status      string  `json:"status"`
 	Balance     float64 `json:"balance"`
 	CreatedAt   string  `json:"createdAt"`
+	ExpiresAt   string  `json:"expiresAt"`
+	ExpireAt    string  `json:"expireAt"`
+	ExpiredAt   string  `json:"expiredAt"`
+	ValidUntil  string  `json:"validUntil"`
+	EndAt       string  `json:"endAt"`
+	ExpiryTime  string  `json:"expiryTime"`
 }
 
 type QueryData struct {
@@ -43,6 +49,12 @@ type QueryData struct {
 	Status      string  `json:"status"`
 	Balance     float64 `json:"balance"`
 	CreatedAt   string  `json:"createdAt"`
+	ExpiresAt   string  `json:"expiresAt"`
+	ExpireAt    string  `json:"expireAt"`
+	ExpiredAt   string  `json:"expiredAt"`
+	ValidUntil  string  `json:"validUntil"`
+	EndAt       string  `json:"endAt"`
+	ExpiryTime  string  `json:"expiryTime"`
 }
 
 type BillingTransaction struct {

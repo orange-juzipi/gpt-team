@@ -483,24 +483,6 @@ export function CardDetailPage() {
         isPending={billingMutation.isPending}
         onRefresh={() => billingMutation.mutate()}
       >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <InfoCard
-            label="总消费"
-            value={
-              typeof billingData?.totalSpent === "number"
-                ? `$${billingData.totalSpent.toFixed(2)}`
-                : "未获取"
-            }
-          />
-          <InfoCard
-            label="剩余余额"
-            value={
-              typeof billingData?.remainingBalance === "number"
-                ? `$${billingData.remainingBalance.toFixed(2)}`
-                : "未获取"
-            }
-          />
-        </div>
         {transactions.length > 0 ? (
           <div className="overflow-x-auto rounded-[24px] border border-border/70">
             <Table className="min-w-[840px] table-fixed">
@@ -535,7 +517,7 @@ export function CardDetailPage() {
                       {String(transaction.amount ?? "--")} {String(transaction.currency ?? "")}
                     </TableCell>
                     <TableCell className="w-[160px] min-w-[160px] max-w-[160px]">
-                      {String(transaction.status ?? "--")}
+                      {formatBillingStatus(String(transaction.status ?? ""))}
                     </TableCell>
                     <TableCell className="w-[200px] min-w-[200px] max-w-[200px]">
                       {formatDateTime(
@@ -670,8 +652,9 @@ function CardSnapshotShowcase({
   const cardNumber = resolveCardNumber(snapshot)
   const cardNumberDisplay = resolveCardNumberDisplay(snapshot, card.lastFour)
   const expiryDate = resolveExpiryDate(snapshot, card.expiryDate)
-  const expiryTime = resolveExpiryTime(snapshot, card.expiryDate)
-  const remainingValidity = formatRemainingValidity(expiryTime, now)
+  const preciseExpiryTime = resolvePreciseExpiryTime(snapshot)
+  const remainingValidity = formatRemainingValidity(preciseExpiryTime, now)
+  const upstreamExpiryDisplay = formatResolvedDateTime(preciseExpiryTime)
   const cvv = resolveCVV(snapshot)
   const remoteCardId =
     typeof snapshot?.cardId === "number"
@@ -757,10 +740,14 @@ function CardSnapshotShowcase({
             onCopy={onCopyValue}
           />
           <SnapshotRow label="远端卡 ID" value={remoteCardId} />
-          <SnapshotRow label="剩余有效期" value={remainingValidity} />
+          <SnapshotRow label="剩余有效时间" value={remainingValidity} />
+          <SnapshotRow
+            label={preciseExpiryTime ? "上游到期时间" : "上游创建时间"}
+            value={preciseExpiryTime ? upstreamExpiryDisplay : remoteCreatedAt}
+          />
           <SnapshotRow label="状态" value={statusLabel} />
           <SnapshotRow label="余额" value={balance} />
-          <SnapshotRow label="上游创建时间" value={remoteCreatedAt} last />
+          <SnapshotRow label="最近同步时间" value={event ? formatDateTime(event.createdAt) : "未执行"} last />
         </div>
 
         <div className="mt-4 flex justify-end">
@@ -803,17 +790,6 @@ function MetricTile({
       <div className={cn("mt-2 text-sm font-medium", dark ? "text-white" : "")}>
         {value}
       </div>
-    </div>
-  )
-}
-
-function InfoCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-border/70 bg-slate-50 px-4 py-3">
-      <div className="text-xs font-semibold tracking-[0.14em] text-muted-foreground uppercase">
-        {label}
-      </div>
-      <div className="mt-2 text-base font-semibold">{value}</div>
     </div>
   )
 }
@@ -918,18 +894,18 @@ function CardMetaButton({
   return (
     <button
       type="button"
-      className="flex min-h-[92px] w-full items-start justify-between gap-3 rounded-3xl border border-white/10 bg-white/7 px-4 py-3 text-left transition hover:bg-white/12"
+      className="flex min-h-[108px] w-full flex-col rounded-3xl border border-white/10 bg-white/7 px-4 py-3 text-left transition hover:bg-white/12"
       onClick={onClick}
     >
-      <div>
+      <div className="flex items-start justify-between gap-3">
         <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
           {label}
         </div>
-        <div className="mt-1 text-xl font-semibold text-white">
-          {value || "未获取"}
-        </div>
+        <Copy className="mt-0.5 size-4 shrink-0 text-white/70" />
       </div>
-      <Copy className="size-4 text-white/70" />
+      <div className="mt-auto pt-6 text-[2rem] leading-none font-semibold text-white tabular-nums">
+        {value || "未获取"}
+      </div>
     </button>
   )
 }
@@ -942,11 +918,11 @@ function CardMetaStat({
   value: string
 }) {
   return (
-    <div className="flex min-h-[92px] w-full flex-col justify-between rounded-3xl border border-white/10 bg-white/7 px-4 py-3 text-left">
+    <div className="flex min-h-[108px] w-full flex-col rounded-3xl border border-white/10 bg-white/7 px-4 py-3 text-left">
       <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">
         {label}
       </div>
-      <div className="mt-1 text-xl font-semibold text-white">
+      <div className="mt-auto pt-6 text-[2rem] leading-none font-semibold text-white tabular-nums">
         {value || "未获取"}
       </div>
     </div>
@@ -1036,9 +1012,28 @@ function resolveExpiryDate(
   snapshot: Record<string, unknown> | undefined,
   fallback: string
 ) {
-  const snapshotExpiry = resolveRawExpiryValue(snapshot)
-  if (snapshotExpiry) {
-    return formatExpiryDisplay(snapshotExpiry)
+  const monthYearDisplay = resolveExpiryMonthYearDisplay(snapshot)
+  const directExpiry = resolveDirectExpiryValue(snapshot)
+
+  if (monthYearDisplay) {
+    if (!directExpiry) {
+      return monthYearDisplay
+    }
+
+    const directDisplay = formatExpiryDisplay(directExpiry)
+    if (
+      looksLikePreciseDateTimeValue(directExpiry) ||
+      (normalizeShortExpiryDisplay(directExpiry) &&
+        directDisplay !== monthYearDisplay)
+    ) {
+      return monthYearDisplay
+    }
+
+    return directDisplay
+  }
+
+  if (directExpiry) {
+    return formatExpiryDisplay(directExpiry)
   }
 
   if (fallback) {
@@ -1076,6 +1071,31 @@ function formatRemoteStatus(status: string) {
   }
 }
 
+function formatBillingStatus(status: string) {
+  switch (status.trim().toLowerCase()) {
+    case "approved":
+      return "已通过"
+    case "declined":
+      return "已拒绝"
+    case "pending":
+      return "处理中"
+    case "settled":
+      return "已结算"
+    case "reversed":
+    case "reversal":
+      return "已撤销"
+    case "failed":
+      return "失败"
+    case "success":
+    case "succeeded":
+      return "成功"
+    case "":
+      return "--"
+    default:
+      return status
+  }
+}
+
 function statusBadgeClassName(status: string) {
   switch (status.toLowerCase()) {
     case "active":
@@ -1105,38 +1125,18 @@ function useTicker() {
   return now
 }
 
-function resolveRawExpiryValue(snapshot?: Record<string, unknown>) {
-  const directValue = pickSnapshotString(snapshot, [
+function resolveDirectExpiryValue(snapshot?: Record<string, unknown>) {
+  return pickSnapshotString(snapshot, [
     "expiryDate",
     "expiry",
     "expDate",
     "expireDate",
     "expiry_date",
     "expire_date",
-    "expiresAt",
-    "expireAt",
-    "expiredAt",
-    "validUntil",
-    "endAt",
-    "expiryTime",
   ])
-  if (directValue) {
-    return directValue
-  }
-
-  const month = pickSnapshotNumber(snapshot, ["expiryMonth", "expMonth", "month"])
-  const year = pickSnapshotNumber(snapshot, ["expiryYear", "expYear", "year"])
-  if (month && year) {
-    return `${String(month).padStart(2, "0")}/${String(year).slice(-2)}`
-  }
-
-  return ""
 }
 
-function resolveExpiryTime(
-  snapshot: Record<string, unknown> | undefined,
-  fallback: string
-) {
+function resolvePreciseExpiryValue(snapshot?: Record<string, unknown>) {
   const preciseValue = pickSnapshotString(snapshot, [
     "expiresAt",
     "expireAt",
@@ -1146,14 +1146,26 @@ function resolveExpiryTime(
     "expiryTime",
   ])
   if (preciseValue) {
-    const parsed = parsePreciseDateValue(preciseValue)
-    if (parsed) {
-      return parsed
-    }
+    return preciseValue
   }
 
-  const rawExpiry = resolveRawExpiryValue(snapshot) || fallback
-  return parseExpiryAsMonthEnd(rawExpiry)
+  const directValue = resolveDirectExpiryValue(snapshot)
+  return looksLikePreciseDateTimeValue(directValue) ? directValue : ""
+}
+
+function resolveExpiryMonthYearDisplay(snapshot?: Record<string, unknown>) {
+  const month = pickSnapshotNumber(snapshot, ["expiryMonth", "expMonth", "month"])
+  const year = pickSnapshotNumber(snapshot, ["expiryYear", "expYear", "year"])
+  if (!month || !year) {
+    return ""
+  }
+
+  return `${String(month).padStart(2, "0")}/${String(year).slice(-2)}`
+}
+
+function resolvePreciseExpiryTime(snapshot?: Record<string, unknown>) {
+  const preciseValue = resolvePreciseExpiryValue(snapshot)
+  return preciseValue ? parsePreciseDateValue(preciseValue) : undefined
 }
 
 function pickSnapshotString(
@@ -1204,7 +1216,14 @@ function formatExpiryDisplay(value: string) {
     return "未获取"
   }
 
-  const expiryDate = parseExpiryAsMonthEnd(trimmed)
+  const shortExpiry = normalizeShortExpiryDisplay(trimmed)
+  if (shortExpiry) {
+    return shortExpiry
+  }
+
+  const expiryDate = looksLikePreciseDateTimeValue(trimmed)
+    ? parsePreciseDateValue(trimmed)
+    : undefined
   if (expiryDate) {
     return `${String(expiryDate.getMonth() + 1).padStart(2, "0")}/${String(expiryDate.getFullYear()).slice(-2)}`
   }
@@ -1213,6 +1232,10 @@ function formatExpiryDisplay(value: string) {
 }
 
 function parsePreciseDateValue(value: string) {
+  if (!looksLikePreciseDateTimeValue(value)) {
+    return undefined
+  }
+
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) {
     return undefined
@@ -1221,24 +1244,28 @@ function parsePreciseDateValue(value: string) {
   return parsed
 }
 
-function parseExpiryAsMonthEnd(value: string) {
+function looksLikePreciseDateTimeValue(value: string) {
   const trimmed = value.trim()
-  if (!trimmed || trimmed === "未获取") {
-    return undefined
+  if (!trimmed) {
+    return false
   }
 
-  const preciseDate = parsePreciseDateValue(trimmed)
-  if (preciseDate) {
-    return preciseDate
-  }
+  return (
+    /\d{4}[/-]\d{1,2}[/-]\d{1,2}/.test(trimmed) ||
+    trimmed.includes("T") ||
+    trimmed.includes(":")
+  )
+}
 
+function normalizeShortExpiryDisplay(value: string) {
+  const trimmed = value.trim()
   const monthYearMatch =
     trimmed.match(/^(\d{1,2})[/-](\d{2})$/) ??
     trimmed.match(/^(\d{1,2})[/-](\d{4})$/) ??
     trimmed.match(/^(\d{4})[/-](\d{1,2})$/)
 
   if (!monthYearMatch) {
-    return undefined
+    return ""
   }
 
   let month: number
@@ -1256,10 +1283,10 @@ function parseExpiryAsMonthEnd(value: string) {
   }
 
   if (!Number.isFinite(month) || !Number.isFinite(year) || month < 1 || month > 12) {
-    return undefined
+    return ""
   }
 
-  return new Date(year, month, 0, 23, 59, 59, 999)
+  return `${String(month).padStart(2, "0")}/${String(year).slice(-2)}`
 }
 
 function formatRemainingValidity(expiryTime: Date | undefined, now: number) {
@@ -1272,6 +1299,7 @@ function formatRemainingValidity(expiryTime: Date | undefined, now: number) {
     return "已到期"
   }
 
+  const totalSeconds = Math.floor(diff / 1_000)
   const totalMinutes = Math.floor(diff / 60_000)
   const totalHours = Math.floor(diff / 3_600_000)
   const totalDays = Math.floor(diff / 86_400_000)
@@ -1286,7 +1314,20 @@ function formatRemainingValidity(expiryTime: Date | undefined, now: number) {
     return minutes > 0 ? `${totalHours} 小时 ${minutes} 分钟` : `${totalHours} 小时`
   }
 
-  return `${Math.max(totalMinutes, 1)} 分钟`
+  if (totalMinutes >= 1) {
+    const seconds = totalSeconds % 60
+    return `${totalMinutes} 分 ${seconds} 秒`
+  }
+
+  return `${Math.max(totalSeconds, 1)} 秒`
+}
+
+function formatResolvedDateTime(value: Date | undefined) {
+  if (!value) {
+    return "未获取"
+  }
+
+  return formatDateTime(value.toISOString())
 }
 
 function buildCardSnapshotSummary(

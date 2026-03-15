@@ -417,6 +417,66 @@ func TestQueryBuildsExpiryDateFromMonthYear(t *testing.T) {
 	}
 }
 
+func TestQueryPrefersMonthYearAndKeepsPreciseExpiryTime(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-EXPIRES-AT", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:      24119,
+						CardNumber:  "4462220001292405",
+						ExpiryDate:  "03/01",
+						ExpiryMonth: 3,
+						ExpiryYear:  2029,
+						ExpiresAt:   "2026-03-16T02:07:48Z",
+						CVV:         "421",
+						Code:        code,
+						Status:      "ACTIVE",
+					},
+				}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Query(context.Background(), 1); err != nil {
+		t.Fatalf("query card: %v", err)
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.ExpiryDate != "03/29" {
+		t.Fatalf("expected normalized expiry date 03/29, got %q", card.ExpiryDate)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventQuery].NormalizedPayload
+	if !strings.Contains(payload, `"expiresAt":"2026-03-16T02:07:48Z"`) {
+		t.Fatalf("expected query snapshot payload to keep expiresAt, got: %s", payload)
+	}
+}
+
 func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
 	t.Parallel()
 
