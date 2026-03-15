@@ -1,0 +1,476 @@
+package service
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"gpt-team-api/internal/integration/efuncard"
+	"gpt-team-api/internal/integration/meiguodizhi"
+	"gpt-team-api/internal/model"
+	"gpt-team-api/internal/repository"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+type fakeEfuncardClient struct {
+	redeemFn func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error)
+	queryFn  func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error)
+	billFn   func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error)
+	threeFn  func(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error)
+}
+
+func (f fakeEfuncardClient) Redeem(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error) {
+	return f.redeemFn(ctx, code)
+}
+
+func (f fakeEfuncardClient) QueryCard(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+	return f.queryFn(ctx, code)
+}
+
+func (f fakeEfuncardClient) Billing(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+	return f.billFn(ctx, code)
+}
+
+func (f fakeEfuncardClient) ThreeDS(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error) {
+	return f.threeFn(ctx, code, minutes)
+}
+
+type fakeProfileClient struct {
+	fetchFn func(ctx context.Context) (meiguodizhi.ProfileResponse, error)
+}
+
+func (f fakeProfileClient) FetchProfile(ctx context.Context) (meiguodizhi.ProfileResponse, error) {
+	return f.fetchFn(ctx)
+}
+
+func TestImportCardsDeduplicatesAndSkipsExisting(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	service := NewCardService(cardRepo, eventRepo, fakeEfuncardClient{}, fakeProfileClient{})
+
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "EXISTING", CardType: model.CardTypeUS, CardLimit: 0, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	result, err := service.Import(context.Background(), ImportCardsInput{
+		RawText:   "ONE\nEXISTING\nONE\nTWO\n",
+		CardType:  model.CardTypeUK,
+		CardLimit: 2,
+	})
+	if err != nil {
+		t.Fatalf("import cards: %v", err)
+	}
+
+	if result.CreatedCount != 2 {
+		t.Fatalf("expected 2 cards created, got %d", result.CreatedCount)
+	}
+
+	if len(result.Duplicates) != 2 {
+		t.Fatalf("expected duplicate list size 2, got %d", len(result.Duplicates))
+	}
+
+	if result.Items[0].CardType != model.CardTypeUK || result.Items[0].CardLimit != 2 {
+		t.Fatalf("expected imported cards to keep chosen type and limit, got %+v", result.Items[0])
+	}
+}
+
+func TestActivateCardStoresSnapshotForDetailView(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-1", CardType: model.CardTypeUS, CardLimit: 1, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			redeemFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error) {
+				return efuncard.APIResponse[efuncard.RedeemData]{
+					Success: true,
+					Data: efuncard.RedeemData{
+						CardID:     10,
+						CardNumber: "4111111111111111",
+						CVV:        "123",
+						ExpiryDate: "12/25",
+						Code:       code,
+						Status:     "active",
+					},
+				}, nil
+			},
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{}, nil
+			},
+			billFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+				return efuncard.APIResponse[efuncard.BillingData]{}, nil
+			},
+			threeFn: func(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error) {
+				return efuncard.APIResponse[efuncard.ThreeDSData]{}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	event, err := service.Activate(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("activate card: %v", err)
+	}
+
+	if event == nil || !event.Success {
+		t.Fatalf("expected success event")
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.Status != model.CardStatusActivated {
+		t.Fatalf("expected activated status, got %s", card.Status)
+	}
+
+	if card.LastFour != "1111" {
+		t.Fatalf("expected last four 1111, got %s", card.LastFour)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventActivate].NormalizedPayload
+	if !containsAll(payload, "4111111111111111", "\"cvv\":\"123\"", "\"lastFour\":\"1111\"") {
+		t.Fatalf("expected card snapshot payload to include card number and cvv, got: %s", payload)
+	}
+}
+
+func TestQueryMarksCardActivated(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-QUERY", CardType: model.CardTypeES, CardLimit: 2, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			redeemFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error) {
+				return efuncard.APIResponse[efuncard.RedeemData]{}, nil
+			},
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:     22,
+						CardNumber: "5555555555552222",
+						ExpiryDate: "08/29",
+						Code:       code,
+						Status:     "active",
+						Balance:    90,
+					},
+				}, nil
+			},
+			billFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+				return efuncard.APIResponse[efuncard.BillingData]{}, nil
+			},
+			threeFn: func(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error) {
+				return efuncard.APIResponse[efuncard.ThreeDSData]{}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Query(context.Background(), 1); err != nil {
+		t.Fatalf("query card: %v", err)
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.Status != model.CardStatusActivated {
+		t.Fatalf("expected query to promote card status to activated, got %s", card.Status)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventQuery].NormalizedPayload
+	if !strings.Contains(payload, `"balance":90`) {
+		t.Fatalf("expected query snapshot payload to include balance, got: %s", payload)
+	}
+}
+
+func TestQueryStoresZeroBalance(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-ZERO", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			redeemFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.RedeemData], error) {
+				return efuncard.APIResponse[efuncard.RedeemData]{}, nil
+			},
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:     30,
+						CardNumber: "4000000000000002",
+						ExpiryDate: "",
+						Code:       code,
+						Status:     "ACTIVE",
+						Balance:    0,
+					},
+				}, nil
+			},
+			billFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+				return efuncard.APIResponse[efuncard.BillingData]{}, nil
+			},
+			threeFn: func(ctx context.Context, code string, minutes int) (efuncard.APIResponse[efuncard.ThreeDSData], error) {
+				return efuncard.APIResponse[efuncard.ThreeDSData]{}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Query(context.Background(), 1); err != nil {
+		t.Fatalf("query card: %v", err)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventQuery].NormalizedPayload
+	if !strings.Contains(payload, `"balance":0`) {
+		t.Fatalf("expected zero balance to be kept in snapshot payload, got: %s", payload)
+	}
+}
+
+func TestQueryBuildsExpiryDateFromMonthYear(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-EXPIRY", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusUnactivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:      24119,
+						CardNumber:  "4462220001292405",
+						ExpiryMonth: 3,
+						ExpiryYear:  2029,
+						CVV:         "421",
+						Code:        code,
+						Status:      "CANCELLED",
+					},
+				}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Query(context.Background(), 1); err != nil {
+		t.Fatalf("query card: %v", err)
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.ExpiryDate != "03/29" {
+		t.Fatalf("expected derived expiry date 03/29, got %q", card.ExpiryDate)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventQuery].NormalizedPayload
+	if !strings.Contains(payload, `"expiryMonth":3`) || !strings.Contains(payload, `"expiryYear":2029`) {
+		t.Fatalf("expected query snapshot payload to keep expiry month/year, got: %s", payload)
+	}
+}
+
+func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-BILLING", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusActivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			billFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.BillingData], error) {
+				return efuncard.APIResponse[efuncard.BillingData]{
+					Success: true,
+					Data: efuncard.BillingData{
+						CardID:       24119,
+						LastFour:     "2405",
+						Total:        1,
+						SettledCount: 0,
+						SettledAmount: 0,
+						Transactions: []efuncard.BillingTransaction{
+							{
+								ID:           "txn-1",
+								Amount:       0,
+								Currency:     "USD",
+								MerchantName: "OPENAI",
+								Status:       "APPROVED",
+								Date:         "2026-03-15T09:25:06.428+0000",
+							},
+						},
+					},
+				}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Billing(context.Background(), 1); err != nil {
+		t.Fatalf("billing card: %v", err)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventBilling].NormalizedPayload
+	if !strings.Contains(payload, `"merchant":"OPENAI"`) {
+		t.Fatalf("expected merchant to be normalized, got: %s", payload)
+	}
+	if !strings.Contains(payload, `"createdAt":"2026-03-15T09:25:06.428+0000"`) {
+		t.Fatalf("expected createdAt to be normalized, got: %s", payload)
+	}
+}
+
+func TestRefreshProfileUpdatesCard(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-PROFILE", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusActivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{},
+		fakeProfileClient{
+			fetchFn: func(ctx context.Context) (meiguodizhi.ProfileResponse, error) {
+				return meiguodizhi.ProfileResponse{
+					FullName: "Ada Lovelace",
+					Birthday: "1815-12-10",
+					Raw:      `{"fullName":"Ada Lovelace","birthday":"1815-12-10"}`,
+				}, nil
+			},
+		},
+	)
+
+	if _, err := service.RefreshProfile(context.Background(), 1); err != nil {
+		t.Fatalf("refresh profile: %v", err)
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.FullName != "Ada Lovelace" || card.Birthday != "1815-12-10" {
+		t.Fatalf("profile not saved, got %q / %q", card.FullName, card.Birthday)
+	}
+}
+
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/test.db"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	if err := db.AutoMigrate(&model.Card{}, &model.CardEvent{}, &model.Account{}, &model.MailboxProvider{}); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+
+	return db
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAll(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		if !strings.Contains(value, needle) {
+			return false
+		}
+	}
+	return true
+}

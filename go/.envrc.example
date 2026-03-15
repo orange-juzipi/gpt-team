@@ -1,0 +1,26 @@
+# 复制本文件为 .envrc 后，再把占位值替换成你的实际配置。
+# 如果你使用 direnv：
+#   cp .envrc.example .envrc
+#   direnv allow
+
+export PORT=8088
+
+# PostgreSQL 连接串，用于创建并连接业务数据库。
+# 这里的数据库用户需要具备创建目标数据库的权限。
+export POSTGRES_DSN='postgres://<postgres_user>:<postgres_password>@127.0.0.1:5432/postgres?sslmode=disable'
+export POSTGRES_DB_NAME='gpt_team'
+
+# 必须是严格 32 字节，或者是一个 base64 编码后的 32 字节值。
+export ACCOUNT_ENCRYPTION_KEY='0123456789abcdef0123456789abcdef'
+
+# EFuncard 卡服务
+export EFUNCARD_BASE_URL='https://card.efuncard.com'
+export EFUNCARD_API_KEY='<your-efuncard-api-key>'
+
+# Cloudmail 邮件服务
+export CLOUDMAIL_BASE_URL='https://puax.cloud'
+export CLOUDMAIL_API_TOKEN='<your-cloudmail-token>'
+# export CLOUDMAIL_AUTHORIZATION='<your-cloudmail-token>'
+
+# DuckMail 邮件服务
+export DUCKMAIL_BASE_URL='https://api.duckmail.sbs'
