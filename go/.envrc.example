@@ -18,7 +18,7 @@ export EFUNCARD_BASE_URL='https://card.efuncard.com'
 export EFUNCARD_API_KEY='<your-efuncard-api-key>'
 
 # Cloudmail 邮件服务
-export CLOUDMAIL_BASE_URL='https://puax.cloud'
+export CLOUDMAIL_BASE_URL=''
 export CLOUDMAIL_API_TOKEN='<your-cloudmail-token>'
 # export CLOUDMAIL_AUTHORIZATION='<your-cloudmail-token>'
 
