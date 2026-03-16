@@ -155,7 +155,7 @@ func (f fakeHandlerEfuncard) ThreeDS(ctx context.Context, code string, minutes i
 
 type fakeHandlerProfile struct{}
 
-func (fakeHandlerProfile) FetchProfile(ctx context.Context) (meiguodizhi.ProfileResponse, error) {
+func (fakeHandlerProfile) FetchProfile(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error) {
 	return meiguodizhi.ProfileResponse{
 		FullName: "Ada Lovelace",
 		Birthday: "1815-12-10",

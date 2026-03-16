@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"gpt-team-api/internal/apperr"
+	"gpt-team-api/internal/model"
 )
 
 type Client struct {
@@ -18,9 +18,16 @@ type Client struct {
 }
 
 type ProfileResponse struct {
-	FullName string `json:"fullName"`
-	Birthday string `json:"birthday"`
-	Raw      string `json:"raw"`
+	FullName      string `json:"fullName"`
+	Birthday      string `json:"birthday"`
+	StreetAddress string `json:"streetAddress"`
+	District      string `json:"district"`
+	City          string `json:"city"`
+	State         string `json:"state"`
+	StateFull     string `json:"stateFull"`
+	ZipCode       string `json:"zipCode"`
+	PhoneNumber   string `json:"phoneNumber"`
+	Raw           string `json:"raw"`
 }
 
 type refreshRequest struct {
@@ -40,10 +47,11 @@ func NewClient(endpoint string, httpClient *http.Client) *Client {
 	}
 }
 
-func (c *Client) FetchProfile(ctx context.Context) (ProfileResponse, error) {
+func (c *Client) FetchProfile(ctx context.Context, cardType model.CardType) (ProfileResponse, error) {
+	requestPath := profilePathForCardType(cardType)
 	requestBody, err := json.Marshal(refreshRequest{
 		City:   "",
-		Path:   "/",
+		Path:   requestPath,
 		Method: "refresh",
 	})
 	if err != nil {
@@ -58,7 +66,7 @@ func (c *Client) FetchProfile(ctx context.Context) (ProfileResponse, error) {
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://www.meiguodizhi.com")
-	request.Header.Set("Referer", "https://www.meiguodizhi.com/")
+	request.Header.Set("Referer", buildReferer(requestPath))
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -80,62 +88,80 @@ func (c *Client) FetchProfile(ctx context.Context) (ProfileResponse, error) {
 		return ProfileResponse{}, apperr.Upstream("meiguodizhi_decode_failed", "failed to decode meiguodizhi response", err)
 	}
 
-	fullName, birthday := extractProfile(payload)
-	if fullName == "" || birthday == "" {
+	profile := extractProfile(payload)
+	if profile.FullName == "" || profile.Birthday == "" {
 		return ProfileResponse{}, apperr.Upstream("meiguodizhi_contract_changed", "meiguodizhi response does not contain full name and birthday", nil)
 	}
 
-	return ProfileResponse{
-		FullName: fullName,
-		Birthday: birthday,
-		Raw:      string(body),
-	}, nil
+	profile.Raw = string(body)
+	return profile, nil
 }
 
-func extractProfile(payload any) (string, string) {
-	var fullName string
-	var birthday string
-	var fallbackName string
+func extractProfile(payload any) ProfileResponse {
+	state := findFirstString(payload, "state", "province", "region")
 
-	var walk func(value any)
-	walk = func(value any) {
-		switch typed := value.(type) {
+	return ProfileResponse{
+		FullName:      firstNonEmpty(findFirstString(payload, "full_name", "fullName", "realname", "name", "姓名")),
+		Birthday:      firstNonEmpty(findFirstString(payload, "birthday", "birth", "birthdate", "date_of_birth", "dob", "生日")),
+		StreetAddress: firstNonEmpty(findFirstString(payload, "address", "street", "streetaddress", "address1", "address_line_1")),
+		District:      firstNonEmpty(findFirstString(payload, "district", "districts", "county", "borough", "suburb", "address_alias")),
+		City:          firstNonEmpty(findFirstString(payload, "city", "town")),
+		State:         state,
+		StateFull:     firstNonEmpty(findFirstString(payload, "state_full", "province_full", "region_full"), state),
+		ZipCode:       firstNonEmpty(findFirstString(payload, "zip_code", "zip", "zipcode", "postal_code", "postalcode", "postcode")),
+		PhoneNumber:   firstNonEmpty(findFirstString(payload, "telephone", "phone", "phone_number", "mobile", "tel")),
+	}
+}
+
+func findFirstString(value any, keys ...string) string {
+	expected := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		expected[normalizeKey(key)] = struct{}{}
+	}
+
+	var result string
+	var walk func(any)
+	walk = func(current any) {
+		if result != "" {
+			return
+		}
+
+		switch typed := current.(type) {
 		case map[string]any:
 			for key, child := range typed {
-				normalized := normalizeKey(key)
-				if fullName == "" && isFullNameKey(normalized) {
+				if _, ok := expected[normalizeKey(key)]; ok {
 					if candidate := extractString(child); candidate != "" {
-						fullName = candidate
-					}
-				}
-
-				if fallbackName == "" && normalized == "name" {
-					if candidate := extractString(child); strings.Contains(candidate, " ") {
-						fallbackName = candidate
-					}
-				}
-
-				if birthday == "" && isBirthdayKey(normalized) {
-					if candidate := extractString(child); candidate != "" {
-						birthday = candidate
+						result = candidate
+						return
 					}
 				}
 
 				walk(child)
+				if result != "" {
+					return
+				}
 			}
 		case []any:
 			for _, child := range typed {
 				walk(child)
+				if result != "" {
+					return
+				}
 			}
 		}
 	}
 
-	walk(payload)
-	if fullName == "" {
-		fullName = fallbackName
-	}
+	walk(value)
+	return result
+}
 
-	return fullName, birthday
+func extractString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return ""
+	}
 }
 
 func normalizeKey(key string) string {
@@ -143,31 +169,28 @@ func normalizeKey(key string) string {
 	return strings.ToLower(replacer.Replace(key))
 }
 
-func isFullNameKey(key string) bool {
-	switch key {
-	case "fullname", "realname", "fullnamecn", "全名", "姓名":
-		return true
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+
+	return ""
+}
+
+func profilePathForCardType(cardType model.CardType) string {
+	switch cardType {
+	case model.CardTypeUK:
+		return "/uk-address"
+	case model.CardTypeES:
+		return "/es-address"
 	default:
-		return false
+		return "/"
 	}
 }
 
-func isBirthdayKey(key string) bool {
-	switch key {
-	case "birthday", "birth", "birthdate", "dateofbirth", "dob", "生日":
-		return true
-	default:
-		return false
-	}
-}
-
-func extractString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	case float64:
-		return strings.TrimSpace(fmt.Sprintf("%.0f", typed))
-	default:
-		return ""
-	}
+func buildReferer(path string) string {
+	return "https://www.meiguodizhi.com" + path
 }

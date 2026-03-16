@@ -8,20 +8,27 @@ import (
 )
 
 type CardRecord struct {
-	ID           uint64           `json:"id"`
-	Code         string           `json:"code"`
-	CardType     model.CardType   `json:"cardType"`
-	CardLimit    int              `json:"cardLimit"`
-	Status       model.CardStatus `json:"status"`
-	RemoteStatus string           `json:"remoteStatus"`
-	RemoteCardID *uint64          `json:"remoteCardId,omitempty"`
-	LastFour     string           `json:"lastFour"`
-	ExpiryDate   string           `json:"expiryDate"`
-	FullName     string           `json:"fullName"`
-	Birthday     string           `json:"birthday"`
-	LastSyncedAt *time.Time       `json:"lastSyncedAt,omitempty"`
-	CreatedAt    time.Time        `json:"createdAt"`
-	UpdatedAt    time.Time        `json:"updatedAt"`
+	ID            uint64           `json:"id"`
+	Code          string           `json:"code"`
+	CardType      model.CardType   `json:"cardType"`
+	CardLimit     int              `json:"cardLimit"`
+	Status        model.CardStatus `json:"status"`
+	RemoteStatus  string           `json:"remoteStatus"`
+	RemoteCardID  *uint64          `json:"remoteCardId,omitempty"`
+	LastFour      string           `json:"lastFour"`
+	ExpiryDate    string           `json:"expiryDate"`
+	FullName      string           `json:"fullName"`
+	Birthday      string           `json:"birthday"`
+	StreetAddress string           `json:"streetAddress"`
+	District      string           `json:"district"`
+	City          string           `json:"city"`
+	State         string           `json:"state"`
+	StateFull     string           `json:"stateFull"`
+	ZipCode       string           `json:"zipCode"`
+	PhoneNumber   string           `json:"phoneNumber"`
+	LastSyncedAt  *time.Time       `json:"lastSyncedAt,omitempty"`
+	CreatedAt     time.Time        `json:"createdAt"`
+	UpdatedAt     time.Time        `json:"updatedAt"`
 }
 
 type CardEventView struct {

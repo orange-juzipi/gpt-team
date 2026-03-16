@@ -25,6 +25,13 @@ export type CardRecord = {
   expiryDate: string
   fullName: string
   birthday: string
+  streetAddress: string
+  district: string
+  city: string
+  state: string
+  stateFull: string
+  zipCode: string
+  phoneNumber: string
   lastSyncedAt?: string
   createdAt: string
   updatedAt: string

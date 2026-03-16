@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-team-api/internal/apperr"
@@ -27,14 +28,15 @@ type EfuncardClient interface {
 }
 
 type ProfileClient interface {
-	FetchProfile(ctx context.Context) (meiguodizhi.ProfileResponse, error)
+	FetchProfile(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error)
 }
 
 type CardService struct {
-	cards    *repository.CardRepository
-	events   *repository.CardEventRepository
-	efuncard EfuncardClient
-	profiles ProfileClient
+	cards               *repository.CardRepository
+	events              *repository.CardEventRepository
+	efuncard            EfuncardClient
+	profiles            ProfileClient
+	profileRefreshLocks sync.Map
 }
 
 func NewCardService(cards *repository.CardRepository, events *repository.CardEventRepository, efuncardClient EfuncardClient, profileClient ProfileClient) *CardService {
@@ -265,28 +267,57 @@ func (s *CardService) RefreshProfile(ctx context.Context, id uint64) (*CardEvent
 	if err != nil {
 		return nil, err
 	}
+	unlock := s.lockProfileRefresh(card.ID)
+	defer unlock()
 
 	request := map[string]any{"source": "meiguodizhi"}
-	response, callErr := s.profiles.FetchProfile(ctx)
+	response, callErr := s.profiles.FetchProfile(ctx, card.CardType)
 	if callErr != nil {
 		return s.recordFailure(ctx, card.ID, model.CardEventIdentityRefresh, request, callErr)
 	}
 
-	now := time.Now().UTC()
-	card.FullName = response.FullName
-	card.Birthday = response.Birthday
-	card.LastSyncedAt = &now
+	currentCard, err := s.findCard(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 
-	if err := s.cards.Save(ctx, &card); err != nil {
+	now := time.Now().UTC()
+	currentCard.FullName = response.FullName
+	currentCard.Birthday = response.Birthday
+	currentCard.StreetAddress = response.StreetAddress
+	currentCard.District = response.District
+	currentCard.City = response.City
+	currentCard.State = response.State
+	currentCard.StateFull = response.StateFull
+	currentCard.ZipCode = response.ZipCode
+	currentCard.PhoneNumber = response.PhoneNumber
+	currentCard.LastSyncedAt = &now
+
+	if err := s.cards.Save(ctx, &currentCard); err != nil {
 		return nil, apperr.Internal("card_profile_save_failed", "failed to save card profile", err)
 	}
 
 	safePayload := map[string]any{
-		"fullName": response.FullName,
-		"birthday": response.Birthday,
+		"fullName":      response.FullName,
+		"birthday":      response.Birthday,
+		"streetAddress": response.StreetAddress,
+		"district":      response.District,
+		"city":          response.City,
+		"state":         response.State,
+		"stateFull":     response.StateFull,
+		"zipCode":       response.ZipCode,
+		"phoneNumber":   response.PhoneNumber,
 	}
 
 	return s.recordSuccess(ctx, card.ID, model.CardEventIdentityRefresh, request, response.Raw, safePayload)
+}
+
+func (s *CardService) lockProfileRefresh(cardID uint64) func() {
+	lockValue, _ := s.profileRefreshLocks.LoadOrStore(cardID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+
+	return lock.Unlock
 }
 
 func (s *CardService) Delete(ctx context.Context, id uint64) error {
@@ -425,6 +456,8 @@ func (s *CardService) persistCardSnapshot(ctx context.Context, card *model.Card,
 		snapshot.ExpiryYear,
 		snapshot.ExpiresAt,
 		snapshot.CVV,
+		snapshot.BillingAddress,
+		snapshot.GroupInstructions,
 	), nil
 }
 
@@ -461,48 +494,54 @@ func mustJSON(value any) string {
 }
 
 type cardSnapshot struct {
-	CardID      uint64
-	CardNumber  string
-	ExpiryDate  string
-	ExpiryMonth int
-	ExpiryYear  int
-	ExpiresAt   string
-	CVV         string
-	Code        string
-	Status      string
-	Balance     float64
-	CreatedAt   string
+	CardID            uint64
+	CardNumber        string
+	ExpiryDate        string
+	ExpiryMonth       int
+	ExpiryYear        int
+	ExpiresAt         string
+	CVV               string
+	Code              string
+	Status            string
+	Balance           float64
+	CreatedAt         string
+	BillingAddress    string
+	GroupInstructions string
 }
 
 func snapshotFromRedeem(data efuncard.RedeemData) cardSnapshot {
 	return cardSnapshot{
-		CardID:      data.CardID,
-		CardNumber:  data.CardNumber,
-		ExpiryDate:  data.ExpiryDate,
-		ExpiryMonth: data.ExpiryMonth,
-		ExpiryYear:  data.ExpiryYear,
-		ExpiresAt:   firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
-		CVV:         data.CVV,
-		Code:        data.Code,
-		Status:      data.Status,
-		Balance:     data.Balance,
-		CreatedAt:   data.CreatedAt,
+		CardID:            data.CardID,
+		CardNumber:        data.CardNumber,
+		ExpiryDate:        data.ExpiryDate,
+		ExpiryMonth:       data.ExpiryMonth,
+		ExpiryYear:        data.ExpiryYear,
+		ExpiresAt:         firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
+		CVV:               data.CVV,
+		Code:              data.Code,
+		Status:            data.Status,
+		Balance:           data.Balance,
+		CreatedAt:         data.CreatedAt,
+		BillingAddress:    firstNonEmpty(data.NodeInstructions, data.BillingAddress),
+		GroupInstructions: data.GroupInstructions,
 	}
 }
 
 func snapshotFromQuery(data efuncard.QueryData) cardSnapshot {
 	return cardSnapshot{
-		CardID:      data.CardID,
-		CardNumber:  data.CardNumber,
-		ExpiryDate:  data.ExpiryDate,
-		ExpiryMonth: data.ExpiryMonth,
-		ExpiryYear:  data.ExpiryYear,
-		ExpiresAt:   firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
-		CVV:         data.CVV,
-		Code:        data.Code,
-		Status:      data.Status,
-		Balance:     data.Balance,
-		CreatedAt:   data.CreatedAt,
+		CardID:            data.CardID,
+		CardNumber:        data.CardNumber,
+		ExpiryDate:        data.ExpiryDate,
+		ExpiryMonth:       data.ExpiryMonth,
+		ExpiryYear:        data.ExpiryYear,
+		ExpiresAt:         firstNonEmpty(data.ExpiresAt, data.ExpireAt, data.ExpiredAt, data.ValidUntil, data.EndAt, data.ExpiryTime),
+		CVV:               data.CVV,
+		Code:              data.Code,
+		Status:            data.Status,
+		Balance:           data.Balance,
+		CreatedAt:         data.CreatedAt,
+		BillingAddress:    firstNonEmpty(data.NodeInstructions, data.BillingAddress),
+		GroupInstructions: data.GroupInstructions,
 	}
 }
 
@@ -530,6 +569,8 @@ func sanitizeCardPayload(
 	expiryMonth, expiryYear int,
 	expiresAt string,
 	cvv string,
+	billingAddress string,
+	groupInstructions string,
 ) map[string]any {
 	payload := map[string]any{
 		"cardId":     cardID,
@@ -557,6 +598,13 @@ func sanitizeCardPayload(
 	}
 	if expiresAt != "" {
 		payload["expiresAt"] = expiresAt
+	}
+	if billingAddress != "" {
+		payload["billingAddress"] = billingAddress
+		payload["nodeInstructions"] = billingAddress
+	}
+	if groupInstructions != "" {
+		payload["groupInstructions"] = groupInstructions
 	}
 
 	return payload
@@ -691,26 +739,40 @@ func normalizeBillingPayload(data efuncard.BillingData) map[string]any {
 	if data.SettledAmount != 0 {
 		payload["settledAmount"] = data.SettledAmount
 	}
+	if billingAddress := firstNonEmpty(data.NodeInstructions, data.BillingAddress); billingAddress != "" {
+		payload["billingAddress"] = billingAddress
+		payload["nodeInstructions"] = billingAddress
+	}
+	if data.GroupInstructions != "" {
+		payload["groupInstructions"] = data.GroupInstructions
+	}
 
 	return payload
 }
 
 func toCardRecord(card model.Card) CardRecord {
 	return CardRecord{
-		ID:           card.ID,
-		Code:         card.Code,
-		CardType:     card.CardType,
-		CardLimit:    card.CardLimit,
-		Status:       card.Status,
-		RemoteStatus: card.RemoteStatus,
-		RemoteCardID: card.RemoteCardID,
-		LastFour:     card.LastFour,
-		ExpiryDate:   card.ExpiryDate,
-		FullName:     card.FullName,
-		Birthday:     card.Birthday,
-		LastSyncedAt: card.LastSyncedAt,
-		CreatedAt:    card.CreatedAt,
-		UpdatedAt:    card.UpdatedAt,
+		ID:            card.ID,
+		Code:          card.Code,
+		CardType:      card.CardType,
+		CardLimit:     card.CardLimit,
+		Status:        card.Status,
+		RemoteStatus:  card.RemoteStatus,
+		RemoteCardID:  card.RemoteCardID,
+		LastFour:      card.LastFour,
+		ExpiryDate:    card.ExpiryDate,
+		FullName:      card.FullName,
+		Birthday:      card.Birthday,
+		StreetAddress: card.StreetAddress,
+		District:      card.District,
+		City:          card.City,
+		State:         card.State,
+		StateFull:     card.StateFull,
+		ZipCode:       card.ZipCode,
+		PhoneNumber:   card.PhoneNumber,
+		LastSyncedAt:  card.LastSyncedAt,
+		CreatedAt:     card.CreatedAt,
+		UpdatedAt:     card.UpdatedAt,
 	}
 }
 

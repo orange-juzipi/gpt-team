@@ -33,27 +33,132 @@ export class ApiRequestError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    })
+  } catch {
+    throw new ApiRequestError(
+      "网络请求失败，请检查网络后重试。",
+      0,
+      "network_error"
+    )
+  }
 
   if (response.status === 204) {
     return undefined as T
   }
 
-  const payload = (await response.json()) as ApiEnvelope<T> | ApiErrorEnvelope
+  const rawBody = await response.text()
+  const payload = parseJSONBody(rawBody)
+
   if (!response.ok) {
-    const errorCode = "error" in payload ? payload.error.code : "request_failed"
-    const errorMessage = "error" in payload ? payload.error.message : "Request failed"
+    const errorCode = isApiErrorEnvelope(payload)
+      ? payload.error.code
+      : "request_failed"
+    const errorMessage = normalizeErrorMessage(
+      response.status,
+      isApiErrorEnvelope(payload) ? payload.error.message : rawBody
+    )
     throw new ApiRequestError(errorMessage, response.status, errorCode)
   }
 
-  return (payload as ApiEnvelope<T>).data
+  if (isApiEnvelope<T>(payload)) {
+    return payload.data
+  }
+
+  if (rawBody.trim() === "") {
+    return undefined as T
+  }
+
+  throw new ApiRequestError(
+    "服务器响应格式异常，请稍后重试。",
+    response.status,
+    "invalid_response"
+  )
+}
+
+function parseJSONBody(body: string): unknown {
+  const trimmed = body.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function isApiEnvelope<T>(payload: unknown): payload is ApiEnvelope<T> {
+  return typeof payload === "object" && payload !== null && "data" in payload
+}
+
+function isApiErrorEnvelope(payload: unknown): payload is ApiErrorEnvelope {
+  if (typeof payload !== "object" || payload === null || !("error" in payload)) {
+    return false
+  }
+
+  const error = (payload as { error?: unknown }).error
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    "code" in error
+  )
+}
+
+function normalizeErrorMessage(status: number, message: string) {
+  const trimmed = message.trim()
+  if (!trimmed) {
+    return defaultErrorMessage(status)
+  }
+
+  if (looksLikeHTMLResponse(trimmed) || looksLikeGatewayError(trimmed)) {
+    return defaultErrorMessage(status)
+  }
+
+  return trimmed
+}
+
+function defaultErrorMessage(status: number) {
+  if (status === 502 || status === 503 || status === 504) {
+    return "上游服务暂时不可用，请稍后重试。"
+  }
+
+  if (status >= 500) {
+    return "服务暂时不可用，请稍后重试。"
+  }
+
+  return "请求失败，请稍后重试。"
+}
+
+function looksLikeHTMLResponse(message: string) {
+  const lower = message.trim().toLowerCase()
+  return (
+    lower.includes("<html") ||
+    lower.includes("<!doctype html") ||
+    lower.includes("<body") ||
+    lower.includes("<head") ||
+    lower.includes("</html>")
+  )
+}
+
+function looksLikeGatewayError(message: string) {
+  const lower = message.trim().toLowerCase()
+  return (
+    lower.includes("bad gateway") ||
+    lower.includes("gateway timeout") ||
+    lower.includes("service unavailable") ||
+    lower.includes("nginx")
+  )
 }
 
 export const api = {

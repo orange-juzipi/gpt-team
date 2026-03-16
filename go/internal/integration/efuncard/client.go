@@ -20,41 +20,47 @@ type Client struct {
 }
 
 type RedeemData struct {
-	CardID      uint64  `json:"cardId"`
-	CardNumber  string  `json:"cardNumber"`
-	ExpiryDate  string  `json:"expiryDate"`
-	ExpiryMonth int     `json:"expiryMonth"`
-	ExpiryYear  int     `json:"expiryYear"`
-	CVV         string  `json:"cvv"`
-	Code        string  `json:"code"`
-	Status      string  `json:"status"`
-	Balance     float64 `json:"balance"`
-	CreatedAt   string  `json:"createdAt"`
-	ExpiresAt   string  `json:"expiresAt"`
-	ExpireAt    string  `json:"expireAt"`
-	ExpiredAt   string  `json:"expiredAt"`
-	ValidUntil  string  `json:"validUntil"`
-	EndAt       string  `json:"endAt"`
-	ExpiryTime  string  `json:"expiryTime"`
+	CardID            uint64  `json:"cardId"`
+	CardNumber        string  `json:"cardNumber"`
+	ExpiryDate        string  `json:"expiryDate"`
+	ExpiryMonth       int     `json:"expiryMonth"`
+	ExpiryYear        int     `json:"expiryYear"`
+	CVV               string  `json:"cvv"`
+	Code              string  `json:"code"`
+	Status            string  `json:"status"`
+	Balance           float64 `json:"balance"`
+	CreatedAt         string  `json:"createdAt"`
+	ExpiresAt         string  `json:"expiresAt"`
+	ExpireAt          string  `json:"expireAt"`
+	ExpiredAt         string  `json:"expiredAt"`
+	ValidUntil        string  `json:"validUntil"`
+	EndAt             string  `json:"endAt"`
+	ExpiryTime        string  `json:"expiryTime"`
+	BillingAddress    string  `json:"billingAddress"`
+	NodeInstructions  string  `json:"nodeInstructions"`
+	GroupInstructions string  `json:"groupInstructions"`
 }
 
 type QueryData struct {
-	CardID      uint64  `json:"cardId"`
-	CardNumber  string  `json:"cardNumber"`
-	ExpiryDate  string  `json:"expiryDate"`
-	ExpiryMonth int     `json:"expiryMonth"`
-	ExpiryYear  int     `json:"expiryYear"`
-	CVV         string  `json:"cvv"`
-	Code        string  `json:"code"`
-	Status      string  `json:"status"`
-	Balance     float64 `json:"balance"`
-	CreatedAt   string  `json:"createdAt"`
-	ExpiresAt   string  `json:"expiresAt"`
-	ExpireAt    string  `json:"expireAt"`
-	ExpiredAt   string  `json:"expiredAt"`
-	ValidUntil  string  `json:"validUntil"`
-	EndAt       string  `json:"endAt"`
-	ExpiryTime  string  `json:"expiryTime"`
+	CardID            uint64  `json:"cardId"`
+	CardNumber        string  `json:"cardNumber"`
+	ExpiryDate        string  `json:"expiryDate"`
+	ExpiryMonth       int     `json:"expiryMonth"`
+	ExpiryYear        int     `json:"expiryYear"`
+	CVV               string  `json:"cvv"`
+	Code              string  `json:"code"`
+	Status            string  `json:"status"`
+	Balance           float64 `json:"balance"`
+	CreatedAt         string  `json:"createdAt"`
+	ExpiresAt         string  `json:"expiresAt"`
+	ExpireAt          string  `json:"expireAt"`
+	ExpiredAt         string  `json:"expiredAt"`
+	ValidUntil        string  `json:"validUntil"`
+	EndAt             string  `json:"endAt"`
+	ExpiryTime        string  `json:"expiryTime"`
+	BillingAddress    string  `json:"billingAddress"`
+	NodeInstructions  string  `json:"nodeInstructions"`
+	GroupInstructions string  `json:"groupInstructions"`
 }
 
 type BillingTransaction struct {
@@ -71,15 +77,18 @@ type BillingTransaction struct {
 }
 
 type BillingData struct {
-	CardID           uint64               `json:"cardId"`
-	Code             string               `json:"code"`
-	LastFour         string               `json:"lastFour"`
-	Total            int                  `json:"total"`
-	Transactions     []BillingTransaction `json:"transactions"`
-	TotalSpent       float64              `json:"totalSpent"`
-	RemainingBalance float64              `json:"remainingBalance"`
-	SettledCount     int                  `json:"settledCount"`
-	SettledAmount    float64              `json:"settledAmount"`
+	CardID            uint64               `json:"cardId"`
+	Code              string               `json:"code"`
+	LastFour          string               `json:"lastFour"`
+	Total             int                  `json:"total"`
+	Transactions      []BillingTransaction `json:"transactions"`
+	TotalSpent        float64              `json:"totalSpent"`
+	RemainingBalance  float64              `json:"remainingBalance"`
+	SettledCount      int                  `json:"settledCount"`
+	SettledAmount     float64              `json:"settledAmount"`
+	BillingAddress    string               `json:"billingAddress"`
+	NodeInstructions  string               `json:"nodeInstructions"`
+	GroupInstructions string               `json:"groupInstructions"`
 }
 
 type ThreeDSVerification struct {
@@ -210,7 +219,7 @@ func doRequest[T any](httpClient *http.Client, request *http.Request) (T, error)
 }
 
 func mapHTTPError(status int, body []byte) error {
-	message := extractErrorMessage(body)
+	message := sanitizeHTTPErrorMessage(status, extractErrorMessage(body))
 	if message == "" {
 		message = http.StatusText(status)
 	}
@@ -228,6 +237,41 @@ func mapHTTPError(status int, body []byte) error {
 	default:
 		return apperr.Upstream(code, message, nil)
 	}
+}
+
+func sanitizeHTTPErrorMessage(status int, message string) string {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return ""
+	}
+
+	if looksLikeHTMLResponse(trimmed) || looksLikeGatewayError(trimmed) {
+		if status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
+			return "上游服务暂时不可用，请稍后重试"
+		}
+		if status >= http.StatusInternalServerError {
+			return "上游服务响应异常，请稍后重试"
+		}
+	}
+
+	return trimmed
+}
+
+func looksLikeHTMLResponse(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<!doctype html") ||
+		strings.Contains(lower, "<body") ||
+		strings.Contains(lower, "<head") ||
+		strings.Contains(lower, "</html>")
+}
+
+func looksLikeGatewayError(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(lower, "bad gateway") ||
+		strings.Contains(lower, "gateway timeout") ||
+		strings.Contains(lower, "service unavailable") ||
+		strings.Contains(lower, "nginx")
 }
 
 func extractErrorMessage(body []byte) string {

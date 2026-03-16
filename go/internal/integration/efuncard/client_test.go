@@ -107,3 +107,27 @@ func TestQueryCardParsesPreciseExpiryTime(t *testing.T) {
 		t.Fatalf("unexpected expiresAt: %+v", response.Data)
 	}
 }
+
+func TestRedeemSanitizesHTMLBadGatewayError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", server.Client())
+	_, err := client.Redeem(context.Background(), "CDK-1")
+	if err == nil {
+		t.Fatalf("expected upstream error")
+	}
+
+	if apperr.Status(err) != http.StatusBadGateway {
+		t.Fatalf("expected 502 status, got %d", apperr.Status(err))
+	}
+	if apperr.Message(err) != "上游服务暂时不可用，请稍后重试" {
+		t.Fatalf("expected sanitized upstream message, got %q", apperr.Message(err))
+	}
+}

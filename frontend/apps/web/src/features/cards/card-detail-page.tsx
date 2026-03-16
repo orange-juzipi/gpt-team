@@ -3,9 +3,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useParams } from "@tanstack/react-router"
 import {
   ArrowLeft,
+  Building2,
   CalendarDays,
   Copy,
+  Landmark,
   LoaderCircle,
+  Map as MapIcon,
+  MapPin,
+  Phone,
   RefreshCw,
   Search,
   ShieldEllipsis,
@@ -18,9 +23,7 @@ import { Button, buttonVariants } from "@workspace/ui/components/button"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
-  CardTitle,
 } from "@workspace/ui/components/card"
 import {
   Table,
@@ -37,18 +40,16 @@ import { useFlashMessage } from "@/components/use-flash-message"
 import { CardActionResultDialog } from "@/features/cards/card-action-result-dialog"
 import { api } from "@/lib/api"
 import {
+  cardCountryLabel,
   cardLimitLabel,
   cardStatusLabel,
-  eventTypeLabel,
   cardTypeLabel,
   formatDateTime,
 } from "@/lib/format"
 import type { CardEventView, CardRecord } from "@/lib/types"
 
-const AUTO_PROFILE_REFRESH_DEDUP_WINDOW_MS = 1000
 const AUTO_REMOTE_QUERY_DEDUP_WINDOW_MS = 1000
 const DEFAULT_THREE_DS_WINDOW_MINUTES = 30
-const autoProfileRefreshRuns = new Map<string, number>()
 const autoRemoteQueryRuns = new Map<string, number>()
 
 export function CardDetailPage() {
@@ -88,29 +89,13 @@ export function CardDetailPage() {
   })
   const profileMutation = useActionMutation({
     action: () => api.refreshProfile(numericCardId),
-    successMessage: "全名和生日已刷新。",
+    successMessage: "随机资料已刷新。",
     queryClient,
     cardId: params.cardId,
     message,
   })
   const autoQueryMutation = useMutation({
     mutationFn: () => api.queryCard(numericCardId),
-    onSuccess: () => {
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["cards"] }),
-        queryClient.invalidateQueries({ queryKey: ["card", params.cardId] }),
-      ])
-    },
-    onError: (error) => {
-      message.error(error.message)
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["cards"] }),
-        queryClient.invalidateQueries({ queryKey: ["card", params.cardId] }),
-      ])
-    },
-  })
-  const autoProfileMutation = useMutation({
-    mutationFn: () => api.refreshProfile(numericCardId),
     onSuccess: () => {
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["cards"] }),
@@ -146,24 +131,8 @@ export function CardDetailPage() {
     autoRemoteQueryRuns.set(params.cardId, now)
     autoQueryMutation.mutate()
   })
-  const runAutoProfileRefresh = useEffectEvent(() => {
-    if (!Number.isFinite(numericCardId) || numericCardId <= 0) {
-      return
-    }
-
-    const now = Date.now()
-    const lastRunAt = autoProfileRefreshRuns.get(params.cardId) ?? 0
-    if (now - lastRunAt < AUTO_PROFILE_REFRESH_DEDUP_WINDOW_MS) {
-      return
-    }
-
-    autoProfileRefreshRuns.set(params.cardId, now)
-    autoProfileMutation.mutate()
-  })
-
   useEffect(() => {
     runAutoCardQuery()
-    runAutoProfileRefresh()
   }, [params.cardId])
 
   const detail = detailQuery.data
@@ -198,20 +167,75 @@ export function CardDetailPage() {
   const verifications = Array.isArray((threeDSData as Record<string, unknown>)?.verifications)
     ? ((threeDSData as Record<string, unknown>).verifications as Array<Record<string, unknown>>)
     : []
-  const remoteStatusLabel = formatRemoteStatus(
-    detail.card.remoteStatus || detail.card.status
-  )
-  const lastActionLabel = activationOrQueryEvent
-    ? eventTypeLabel(activationOrQueryEvent.type)
-    : "未执行"
   const snapshotData = cardSnapshot?.data
-  const cardNumber = resolveCardNumber(snapshotData)
-  const cardNumberDisplay = resolveCardNumberDisplay(snapshotData, detail.card.lastFour)
-  const expiryDate = resolveExpiryDate(snapshotData, detail.card.expiryDate)
-  const cvv = resolveCVV(snapshotData)
+  const billingAddress = resolveBillingAddress(
+    snapshotData,
+    billingData as Record<string, unknown> | undefined
+  )
+  const currentRemoteStatus =
+    typeof snapshotData?.status === "string" && snapshotData.status
+      ? snapshotData.status
+      : detail.card.remoteStatus || detail.card.status
+  const isCardCancelled = isCardClosedStatus(currentRemoteStatus)
   const fullName = detail.card.fullName || "未获取"
   const isRemoteQuerying = queryMutation.isPending
   const isProfileRefreshing = profileMutation.isPending
+  const profileFields = [
+    {
+      icon: <UserRound className="size-4" />,
+      label: "全名",
+      value: fullName,
+      copyValue: detail.card.fullName,
+    },
+    {
+      icon: <CalendarDays className="size-4" />,
+      label: "生日",
+      value: detail.card.birthday || "未获取",
+      copyValue: detail.card.birthday,
+    },
+    {
+      icon: <MapPin className="size-4" />,
+      label: "街道",
+      value: detail.card.streetAddress || "未获取",
+      copyValue: detail.card.streetAddress,
+    },
+    {
+      icon: <Building2 className="size-4" />,
+      label: "区县",
+      value: detail.card.district || "未获取",
+      copyValue: detail.card.district,
+    },
+    {
+      icon: <Building2 className="size-4" />,
+      label: "城市",
+      value: detail.card.city || "未获取",
+      copyValue: detail.card.city,
+    },
+    {
+      icon: <Landmark className="size-4" />,
+      label: "州",
+      value: detail.card.state || "未获取",
+      copyValue: detail.card.state,
+    },
+    {
+      icon: <MapIcon className="size-4" />,
+      label: "州全称",
+      value: detail.card.stateFull || "未获取",
+      copyValue: detail.card.stateFull,
+    },
+    {
+      icon: <MapPin className="size-4" />,
+      label: "邮编",
+      value: detail.card.zipCode || "未获取",
+      copyValue: detail.card.zipCode,
+    },
+    {
+      icon: <Phone className="size-4" />,
+      label: "电话号码",
+      value: detail.card.phoneNumber || "未获取",
+      copyValue: detail.card.phoneNumber,
+    },
+  ]
 
   const handleCopyCardSummary = async () => {
     if (!detail || !navigator.clipboard) {
@@ -254,14 +278,19 @@ export function CardDetailPage() {
             <ArrowLeft className="size-4" />
             返回卡密列表
           </Link>
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/75 bg-white/85 px-4 py-2 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-full border border-white/75 bg-white/85 px-4 py-2 shadow-sm backdrop-blur transition hover:bg-white"
+            onClick={() => handleCopyValue(detail.card.code, "卡密")}
+          >
             <span className="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
               卡密
             </span>
             <span className="font-mono text-sm font-semibold text-slate-900">
               {detail.card.code}
             </span>
-          </div>
+            <Copy className="size-4 text-slate-500" />
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -270,34 +299,12 @@ export function CardDetailPage() {
           >
             {cardStatusLabel(detail.card.status)}
           </Badge>
-          <div className="rounded-full border border-white/75 bg-white/85 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur">
-            最近同步：
-            <span className="ml-1 font-medium text-foreground">
-              {formatDateTime(detail.card.lastSyncedAt)}
-            </span>
-          </div>
         </div>
       </div>
 
       <section>
         <Card className="overflow-hidden border-none bg-[linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,64,175,0.95)_58%,_rgba(15,118,110,0.92)_118%)] text-white shadow-[0_24px_48px_rgba(15,23,42,0.2)]">
-          <CardHeader className="space-y-4 border-b border-white/10 pb-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <CardDescription className="text-slate-200">
-                  激活与远程查询
-                </CardDescription>
-                <CardTitle className="text-2xl font-semibold text-white">
-                  操作面板
-                </CardTitle>
-              </div>
-              <div className="rounded-full border border-white/12 bg-white/8 px-3 py-1.5 text-xs text-slate-200">
-                {activationOrQueryEvent
-                  ? `最近${lastActionLabel} · ${formatDateTime(activationOrQueryEvent.createdAt)}`
-                  : "还没有执行过激活或查询"}
-              </div>
-            </div>
-
+          <CardContent className="pt-6">
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <Button
                 className="h-11 rounded-2xl bg-white text-slate-900 shadow-none hover:bg-white/95"
@@ -327,7 +334,7 @@ export function CardDetailPage() {
               <Button
                 variant="outline"
                 className="h-11 rounded-2xl border-white/20 bg-white/8 text-white hover:bg-white/14 hover:text-white"
-                disabled={billingMutation.isPending}
+                disabled={billingMutation.isPending || isCardCancelled}
                 onClick={() => {
                   setBillingDialogOpen(true)
                   billingMutation.mutate()
@@ -343,7 +350,7 @@ export function CardDetailPage() {
               <Button
                 variant="outline"
                 className="h-11 rounded-2xl border-white/20 bg-white/8 text-white hover:bg-white/14 hover:text-white"
-                disabled={threeDSMutation.isPending}
+                disabled={threeDSMutation.isPending || isCardCancelled}
                 onClick={() => {
                   setThreeDSDialogOpen(true)
                   threeDSMutation.mutate()
@@ -357,7 +364,7 @@ export function CardDetailPage() {
                 {threeDSMutation.isPending ? "查询中..." : "查询 3DS"}
               </Button>
             </div>
-          </CardHeader>
+          </CardContent>
         </Card>
       </section>
 
@@ -367,6 +374,7 @@ export function CardDetailPage() {
             card={detail.card}
             event={activationOrQueryEvent}
             snapshot={snapshotData}
+            billingData={billingData as Record<string, unknown> | undefined}
             onCopy={handleCopyCardSummary}
             onCopyValue={handleCopyValue}
           />
@@ -375,10 +383,15 @@ export function CardDetailPage() {
         <div className="space-y-4">
           <Card className="border-white/70 bg-white/88 shadow-[0_18px_40px_rgba(15,23,42,0.08)] backdrop-blur">
             <CardHeader className="space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <CardDescription>全名与生日</CardDescription>
-                  <CardTitle className="text-2xl font-semibold">身份资料</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="text-lg font-semibold text-slate-900">随机资料</div>
+                  <Badge
+                    variant="outline"
+                    className="rounded-full border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium text-slate-600"
+                  >
+                    {cardCountryLabel(detail.card.cardType)}
+                  </Badge>
                 </div>
                 <Button
                   variant="outline"
@@ -395,80 +408,32 @@ export function CardDetailPage() {
                   {isProfileRefreshing ? "刷新中..." : "刷新"}
                 </Button>
               </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant={
-                    detail.latestIdentity
-                      ? detail.latestIdentity.success
-                        ? "success"
-                        : "destructive"
-                      : "outline"
-                  }
-                >
-                  {detail.latestIdentity
-                    ? detail.latestIdentity.success
-                      ? "已刷新"
-                      : "刷新失败"
-                    : "进入页面自动请求"}
-                </Badge>
-                <p className="text-sm text-muted-foreground">
-                  {detail.latestIdentity
-                    ? `最近刷新：${formatDateTime(detail.latestIdentity.createdAt)}`
-                    : "当前页面每次进入都会重新请求一次。"}
-                </p>
-              </div>
             </CardHeader>
 
             <CardContent className="space-y-3">
-              <IdentityCard
-                icon={<UserRound className="size-4" />}
-                label="全名"
-                value={fullName}
-                copyValue={detail.card.fullName}
-                onCopy={handleCopyValue}
-              />
-              <IdentityCard
-                icon={<CalendarDays className="size-4" />}
-                label="生日"
-                value={detail.card.birthday || "未获取"}
-              />
-            </CardContent>
-          </Card>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {profileFields.map((field) => (
+                  <IdentityCard
+                    key={field.label}
+                    icon={field.icon}
+                    label={field.label}
+                    value={field.value}
+                    copyValue={field.copyValue}
+                    onCopy={handleCopyValue}
+                  />
+                ))}
+              </div>
 
-          <Card className="border-white/70 bg-white/88 shadow-[0_18px_40px_rgba(15,23,42,0.08)] backdrop-blur">
-            <CardHeader className="pb-4">
-              <CardDescription>卡片资料</CardDescription>
-              <CardTitle className="text-2xl font-semibold">同步信息</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-3 sm:grid-cols-2">
-              <CopyableMetricTile
-                label="卡号"
-                value={cardNumberDisplay}
-                copyValue={cardNumber}
-                onCopy={handleCopyValue}
-              />
-              <CopyableMetricTile
-                label="有效期"
-                value={expiryDate}
-                copyValue={expiryDate}
-                onCopy={handleCopyValue}
-              />
-              <CopyableMetricTile
-                label="CVV"
-                value={cvv}
-                copyValue={cvv}
-                onCopy={handleCopyValue}
-              />
-              <MetricTile label="远端状态" value={remoteStatusLabel} />
-              <MetricTile
-                label="最近动作时间"
-                value={
-                  activationOrQueryEvent
-                    ? formatDateTime(activationOrQueryEvent.createdAt)
-                    : "未执行"
-                }
-              />
+              {billingAddress ? (
+                <Button
+                  variant="outline"
+                  className="h-11 w-full rounded-2xl"
+                  onClick={() => handleCopyValue(billingAddress, "账单地址")}
+                >
+                  <Copy className="size-4" />
+                  复制账单地址
+                </Button>
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -478,9 +443,10 @@ export function CardDetailPage() {
         open={billingDialogOpen}
         onOpenChange={setBillingDialogOpen}
         title="账单查询结果"
-        description="点击上方操作面板的账单查询后，会在这里展示最新结果。"
+        description="点击上方查询按钮后，会在这里展示最新结果。"
         event={detail.latestBilling}
         isPending={billingMutation.isPending}
+        refreshDisabled={isCardCancelled}
         onRefresh={() => billingMutation.mutate()}
       >
         {transactions.length > 0 ? (
@@ -542,9 +508,10 @@ export function CardDetailPage() {
         open={threeDSDialogOpen}
         onOpenChange={setThreeDSDialogOpen}
         title="3DS 验证码查询结果"
-        description="点击上方操作面板的 3DS 查询后，会在这里展示最新验证码。"
+        description="点击上方查询按钮后，会在这里展示最新验证码。"
         event={detail.latestThreeDS}
         isPending={threeDSMutation.isPending}
+        refreshDisabled={isCardCancelled}
         onRefresh={() => threeDSMutation.mutate()}
       >
         {verifications.length > 0 ? (
@@ -630,24 +597,23 @@ function CardSnapshotShowcase({
   card,
   event,
   snapshot,
+  billingData,
   onCopy,
   onCopyValue,
 }: {
   card: CardRecord
   event?: CardEventView
   snapshot?: Record<string, unknown>
+  billingData?: Record<string, unknown>
   onCopy: () => void
   onCopyValue: (value: string, label: string) => void
 }) {
   const now = useTicker()
-  const code =
-    typeof snapshot?.code === "string" && snapshot.code
-      ? snapshot.code
-      : card.code
   const statusRaw =
     typeof snapshot?.status === "string" && snapshot.status
       ? snapshot.status
       : card.remoteStatus || card.status
+  const isClosedCard = isCardClosedStatus(statusRaw)
   const statusLabel = formatRemoteStatus(statusRaw)
   const cardNumber = resolveCardNumber(snapshot)
   const cardNumberDisplay = resolveCardNumberDisplay(snapshot, card.lastFour)
@@ -670,37 +636,42 @@ function CardSnapshotShowcase({
     typeof snapshot?.createdAt === "string" && snapshot.createdAt
       ? formatDateTime(snapshot.createdAt)
       : "未提供"
+  const billingAddress = resolveBillingAddress(snapshot, billingData)
 
   return (
     <div className="space-y-4">
       <div className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-[linear-gradient(180deg,_rgba(247,250,255,0.97),_rgba(234,242,255,0.92)_100%)] p-4 shadow-[0_18px_40px_rgba(30,64,175,0.12)] sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-slate-600 uppercase shadow-sm">
-            {event ? eventTypeLabel(event.type) : "卡片快照"}
-          </div>
-          <div className="text-right text-xs text-slate-400">
-            最近同步
-            <div className="mt-1 text-sm font-medium text-slate-600">
-              {event ? formatDateTime(event.createdAt) : "未执行"}
-            </div>
-          </div>
-        </div>
-
-        <div className="relative mt-4 overflow-hidden rounded-[30px] border border-white/20 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.24),_transparent_24%),linear-gradient(135deg,_#1f2937_0%,_#1d4ed8_56%,_#0f766e_100%)] px-5 py-5 text-white shadow-[0_24px_40px_rgba(30,64,175,0.2)] sm:px-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="rounded-2xl border border-white/15 bg-white/12 p-2.5 shadow-inner">
-              <div className="h-8 w-12 rounded-xl border border-white/15 bg-[linear-gradient(135deg,_rgba(255,255,255,0.85),_rgba(255,255,255,0.2))]" />
-            </div>
-            <div className="flex flex-col items-end gap-3 text-right">
-              <div>
-                <div className="text-xs font-medium uppercase tracking-[0.18em] text-white/65">
-                  {cardTypeLabel(card.cardType)}
-                </div>
-                <div className="mt-1 text-3xl font-semibold tracking-tight">
-                  VIRTUAL
-                </div>
+        <div
+          className={cn(
+            "relative overflow-hidden rounded-[30px] border border-white/20 px-5 py-5 text-white shadow-[0_24px_40px_rgba(30,64,175,0.2)] sm:px-6",
+            isClosedCard
+              ? "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.16),_transparent_24%),linear-gradient(135deg,_#334155_0%,_#64748b_56%,_#94a3b8_100%)]"
+              : "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.24),_transparent_24%),linear-gradient(135deg,_#1f2937_0%,_#1d4ed8_56%,_#0f766e_100%)]"
+          )}
+        >
+          {isClosedCard ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="rotate-[-18deg] border border-white/12 px-6 py-3 text-4xl font-semibold tracking-[0.3em] text-white/10 sm:text-5xl">
+                已销卡
               </div>
-              <Badge className={statusBadgeClassName(statusRaw)}>{statusLabel}</Badge>
+            </div>
+          ) : null}
+          <div className="grid grid-cols-[auto_1fr_auto] items-center gap-4">
+            <div className="flex items-center gap-4">
+              <div className="rounded-2xl border border-white/15 bg-white/12 p-2.5 shadow-inner">
+                <div className="h-8 w-12 rounded-xl border border-white/15 bg-[linear-gradient(135deg,_rgba(255,255,255,0.85),_rgba(255,255,255,0.2))]" />
+              </div>
+              <div className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+                VIRTUAL
+              </div>
+            </div>
+            <div className="flex justify-center">
+              {!isClosedCard ? (
+                <Badge className={statusBadgeClassName(statusRaw)}>{statusLabel}</Badge>
+              ) : null}
+            </div>
+            <div className="text-right text-xs font-medium uppercase tracking-[0.18em] text-white/65">
+              {cardTypeLabel(card.cardType)}
             </div>
           </div>
 
@@ -732,13 +703,6 @@ function CardSnapshotShowcase({
         </div>
 
         <div className="mt-4 overflow-hidden rounded-[24px] border border-white/70 bg-white/80 shadow-sm">
-          <SnapshotRow
-            label="激活码"
-            value={code}
-            emphasize
-            copyValue={code}
-            onCopy={onCopyValue}
-          />
           <SnapshotRow label="远端卡 ID" value={remoteCardId} />
           <SnapshotRow label="剩余有效时间" value={remainingValidity} />
           <SnapshotRow
@@ -746,9 +710,28 @@ function CardSnapshotShowcase({
             value={preciseExpiryTime ? upstreamExpiryDisplay : remoteCreatedAt}
           />
           <SnapshotRow label="状态" value={statusLabel} />
-          <SnapshotRow label="余额" value={balance} />
-          <SnapshotRow label="最近同步时间" value={event ? formatDateTime(event.createdAt) : "未执行"} last />
+          <SnapshotRow label="余额" value={balance} last />
         </div>
+
+        {billingAddress ? (
+          <div className="mt-4 overflow-hidden rounded-[24px] border border-white/70 bg-white/80 shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+              <div className="text-sm font-semibold text-slate-900">账单地址</div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={() => onCopyValue(billingAddress, "账单地址")}
+              >
+                <Copy className="size-4" />
+                复制
+              </Button>
+            </div>
+            <div className="whitespace-pre-wrap break-words px-4 py-4 text-sm leading-6 text-slate-700">
+              {billingAddress}
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-4 flex justify-end">
           <Button variant="outline" size="sm" onClick={onCopy}>
@@ -756,39 +739,6 @@ function CardSnapshotShowcase({
             复制卡片摘要
           </Button>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function MetricTile({
-  label,
-  value,
-  dark,
-}: {
-  label: string
-  value: string
-  dark?: boolean
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-2xl border px-4 py-3",
-        dark
-          ? "border-white/12 bg-white/8"
-          : "border-border/70 bg-slate-50"
-      )}
-    >
-      <div
-        className={cn(
-          "text-xs font-semibold tracking-[0.14em] uppercase",
-          dark ? "text-slate-300" : "text-muted-foreground"
-        )}
-      >
-        {label}
-      </div>
-      <div className={cn("mt-2 text-sm font-medium", dark ? "text-white" : "")}>
-        {value}
       </div>
     </div>
   )
@@ -848,34 +798,6 @@ function IdentityCard({
         {isCopyable ? <Copy className="ml-auto size-4 text-slate-400" /> : null}
       </div>
       <div className="mt-4 break-all text-lg font-semibold text-slate-900">
-        {value}
-      </div>
-    </button>
-  )
-}
-
-function CopyableMetricTile({
-  label,
-  value,
-  copyValue,
-  onCopy,
-}: {
-  label: string
-  value: string
-  copyValue: string
-  onCopy: (value: string, label: string) => void
-}) {
-  return (
-    <button
-      type="button"
-      className="rounded-2xl border border-border/70 bg-slate-50 px-4 py-3 text-left transition hover:border-slate-300 hover:bg-white"
-      onClick={() => onCopy(copyValue, label)}
-    >
-      <div className="flex items-center justify-between gap-3 text-xs font-semibold tracking-[0.14em] text-muted-foreground uppercase">
-        <span>{label}</span>
-        <Copy className="size-4" />
-      </div>
-      <div className="mt-2 break-all text-sm font-medium text-slate-900">
         {value}
       </div>
     </button>
@@ -1051,6 +973,22 @@ function resolveCVV(snapshot?: Record<string, unknown>) {
   return "未获取"
 }
 
+function resolveBillingAddress(
+  ...sources: Array<Record<string, unknown> | undefined>
+) {
+  for (const source of sources) {
+    const value = pickSnapshotString(source, [
+      "billingAddress",
+      "nodeInstructions",
+    ])
+    if (value) {
+      return normalizeInstructionText(value)
+    }
+  }
+
+  return ""
+}
+
 function formatRemoteStatus(status: string) {
   switch (status.toLowerCase()) {
     case "active":
@@ -1068,6 +1006,18 @@ function formatRemoteStatus(status: string) {
       return "未激活"
     default:
       return status || "未获取"
+  }
+}
+
+function isCardClosedStatus(status: string) {
+  switch (status.trim().toLowerCase()) {
+    case "cancelled":
+    case "canceled":
+    case "closed":
+    case "used":
+      return true
+    default:
+      return false
   }
 }
 
@@ -1287,6 +1237,33 @@ function normalizeShortExpiryDisplay(value: string) {
   }
 
   return `${String(month).padStart(2, "0")}/${String(year).slice(-2)}`
+}
+
+function normalizeInstructionText(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  const withLineBreaks = trimmed.replace(/<br\s*\/?>/gi, "\n")
+  const text =
+    typeof document !== "undefined"
+      ? extractHtmlText(withLineBreaks)
+      : withLineBreaks.replace(/<[^>]+>/g, " ")
+
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim()
+}
+
+function extractHtmlText(value: string) {
+  const container = document.createElement("div")
+  container.innerHTML = value
+  return container.textContent ?? container.innerText ?? ""
 }
 
 function formatRemainingValidity(expiryTime: Date | undefined, now: number) {

@@ -24,6 +24,7 @@ export function CardActionResultDialog({
   description,
   event,
   isPending,
+  refreshDisabled,
   onRefresh,
   children,
 }: {
@@ -33,6 +34,7 @@ export function CardActionResultDialog({
   description: string
   event?: CardEventView
   isPending?: boolean
+  refreshDisabled?: boolean
   onRefresh: () => void
   children: ReactNode
 }) {
@@ -49,7 +51,7 @@ export function CardActionResultDialog({
               variant="outline"
               size="sm"
               className="rounded-full"
-              disabled={isPending}
+              disabled={isPending || refreshDisabled}
               onClick={onRefresh}
             >
               {isPending ? (
@@ -64,7 +66,7 @@ export function CardActionResultDialog({
           <div className="flex flex-wrap items-center gap-2">
             <Badge
               variant={
-                event ? (event.success ? "success" : "destructive") : "outline"
+                event?.success ? "success" : "outline"
               }
             >
               {isPending
@@ -72,7 +74,7 @@ export function CardActionResultDialog({
                 : event
                   ? event.success
                     ? "查询成功"
-                    : "查询失败"
+                    : "最近查询"
                   : "暂无数据"}
             </Badge>
             <span className="text-sm text-muted-foreground">
@@ -84,12 +86,6 @@ export function CardActionResultDialog({
         </DialogHeader>
 
         <DialogBody className="space-y-4">
-          {event?.errorMessage ? (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              {event.errorMessage}
-            </div>
-          ) : null}
-
           <div
             className={cn(
               "space-y-4",

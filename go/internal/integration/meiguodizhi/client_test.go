@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gpt-team-api/internal/model"
 )
 
-func TestFetchProfileExtractsFullNameAndBirthday(t *testing.T) {
+func TestFetchProfileExtractsProfileFields(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,19 +45,74 @@ func TestFetchProfileExtractsFullNameAndBirthday(t *testing.T) {
 				t.Fatalf("unexpected body[%q]: got %q want %q", key, got, want)
 			}
 		}
+		if got := r.Header.Get("Referer"); got != "https://www.meiguodizhi.com/" {
+			t.Fatalf("expected referer header, got %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"identity":{"full_name":"Grace Hopper","birthday":"1906-12-09"}}`))
+		_, _ = w.Write([]byte(`{"address":{"Address":"2350 Monroe Street","Telephone":"713-375-5326","City":"Houston","Zip_Code":"77028","State":"TX","State_Full":"Texas","Full_Name":"Grace Hopper","Birthday":"1906-12-09"}}`))
 	}))
 	defer server.Close()
 
 	client := NewClient(server.URL, server.Client())
-	result, err := client.FetchProfile(context.Background())
+	result, err := client.FetchProfile(context.Background(), model.CardTypeUS)
 	if err != nil {
 		t.Fatalf("fetch profile: %v", err)
 	}
 
 	if result.FullName != "Grace Hopper" || result.Birthday != "1906-12-09" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.StreetAddress != "2350 Monroe Street" || result.City != "Houston" || result.StateFull != "Texas" || result.ZipCode != "77028" || result.PhoneNumber != "713-375-5326" {
+		t.Fatalf("expected address fields to be extracted, got %+v", result)
+	}
+}
+
+func TestFetchProfileUsesRegionSpecificPath(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		cardType    model.CardType
+		wantPath    string
+		wantReferer string
+	}{
+		{name: "uk", cardType: model.CardTypeUK, wantPath: "/uk-address", wantReferer: "https://www.meiguodizhi.com/uk-address"},
+		{name: "es", cardType: model.CardTypeES, wantPath: "/es-address", wantReferer: "https://www.meiguodizhi.com/es-address"},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+
+				var requestBody map[string]string
+				if err := json.Unmarshal(body, &requestBody); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+
+				if got := requestBody["path"]; got != testCase.wantPath {
+					t.Fatalf("unexpected path: got %q want %q", got, testCase.wantPath)
+				}
+				if got := r.Header.Get("Referer"); got != testCase.wantReferer {
+					t.Fatalf("unexpected referer: got %q want %q", got, testCase.wantReferer)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"address":{"Full_Name":"Grace Hopper","Birthday":"1906-12-09"}}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, server.Client())
+			if _, err := client.FetchProfile(context.Background(), testCase.cardType); err != nil {
+				t.Fatalf("fetch profile: %v", err)
+			}
+		})
 	}
 }
 
@@ -69,7 +126,7 @@ func TestFetchProfileReturnsContractErrorWhenFieldsMissing(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, server.Client())
-	if _, err := client.FetchProfile(context.Background()); err == nil {
+	if _, err := client.FetchProfile(context.Background(), model.CardTypeUS); err == nil {
 		t.Fatalf("expected contract error")
 	}
 }

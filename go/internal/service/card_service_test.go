@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"gpt-team-api/internal/apperr"
@@ -39,11 +40,11 @@ func (f fakeEfuncardClient) ThreeDS(ctx context.Context, code string, minutes in
 }
 
 type fakeProfileClient struct {
-	fetchFn func(ctx context.Context) (meiguodizhi.ProfileResponse, error)
+	fetchFn func(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error)
 }
 
-func (f fakeProfileClient) FetchProfile(ctx context.Context) (meiguodizhi.ProfileResponse, error) {
-	return f.fetchFn(ctx)
+func (f fakeProfileClient) FetchProfile(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error) {
+	return f.fetchFn(ctx, cardType)
 }
 
 func TestImportCardsDeduplicatesAndSkipsExisting(t *testing.T) {
@@ -477,6 +478,60 @@ func TestQueryPrefersMonthYearAndKeepsPreciseExpiryTime(t *testing.T) {
 	}
 }
 
+func TestQueryKeepsBillingAddressInstructions(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-ADDRESS", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusActivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{
+			queryFn: func(ctx context.Context, code string) (efuncard.APIResponse[efuncard.QueryData], error) {
+				return efuncard.APIResponse[efuncard.QueryData]{
+					Success: true,
+					Data: efuncard.QueryData{
+						CardID:            24119,
+						CardNumber:        "4462220001292405",
+						ExpiryMonth:       3,
+						ExpiryYear:        2029,
+						CVV:               "421",
+						Code:              code,
+						Status:            "ACTIVE",
+						NodeInstructions:  "123 Main St<br>Los Angeles, CA 90001",
+						GroupInstructions: "Use US billing details only",
+					},
+				}, nil
+			},
+		},
+		fakeProfileClient{},
+	)
+
+	if _, err := service.Query(context.Background(), 1); err != nil {
+		t.Fatalf("query card: %v", err)
+	}
+
+	latest, err := eventRepo.LatestByCard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("latest events: %v", err)
+	}
+
+	payload := latest[model.CardEventQuery].NormalizedPayload
+	if !strings.Contains(payload, `"billingAddress":"123 Main St\u003cbr\u003eLos Angeles, CA 90001"`) {
+		t.Fatalf("expected query snapshot payload to keep billing address, got: %s", payload)
+	}
+	if !strings.Contains(payload, `"groupInstructions":"Use US billing details only"`) {
+		t.Fatalf("expected query snapshot payload to keep instructions, got: %s", payload)
+	}
+}
+
 func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
 	t.Parallel()
 
@@ -497,11 +552,12 @@ func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
 				return efuncard.APIResponse[efuncard.BillingData]{
 					Success: true,
 					Data: efuncard.BillingData{
-						CardID:        24119,
-						LastFour:      "2405",
-						Total:         1,
-						SettledCount:  0,
-						SettledAmount: 0,
+						CardID:           24119,
+						LastFour:         "2405",
+						Total:            1,
+						SettledCount:     0,
+						SettledAmount:    0,
+						NodeInstructions: "123 Main St<br>Los Angeles, CA 90001",
 						Transactions: []efuncard.BillingTransaction{
 							{
 								ID:           "txn-1",
@@ -535,6 +591,9 @@ func TestBillingNormalizesMerchantNameAndDate(t *testing.T) {
 	if !strings.Contains(payload, `"createdAt":"2026-03-15T09:25:06.428+0000"`) {
 		t.Fatalf("expected createdAt to be normalized, got: %s", payload)
 	}
+	if !strings.Contains(payload, `"billingAddress":"123 Main St\u003cbr\u003eLos Angeles, CA 90001"`) {
+		t.Fatalf("expected billing payload to keep billing address, got: %s", payload)
+	}
 }
 
 func TestRefreshProfileUpdatesCard(t *testing.T) {
@@ -554,11 +613,20 @@ func TestRefreshProfileUpdatesCard(t *testing.T) {
 		eventRepo,
 		fakeEfuncardClient{},
 		fakeProfileClient{
-			fetchFn: func(ctx context.Context) (meiguodizhi.ProfileResponse, error) {
+			fetchFn: func(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error) {
+				if cardType != model.CardTypeUK {
+					t.Fatalf("expected UK card type, got %s", cardType)
+				}
 				return meiguodizhi.ProfileResponse{
-					FullName: "Ada Lovelace",
-					Birthday: "1815-12-10",
-					Raw:      `{"fullName":"Ada Lovelace","birthday":"1815-12-10"}`,
+					FullName:      "Ada Lovelace",
+					Birthday:      "1815-12-10",
+					StreetAddress: "2350 Monroe Street",
+					City:          "Houston",
+					State:         "TX",
+					StateFull:     "Texas",
+					ZipCode:       "77028",
+					PhoneNumber:   "713-375-5326",
+					Raw:           `{"fullName":"Ada Lovelace","birthday":"1815-12-10"}`,
 				}, nil
 			},
 		},
@@ -575,6 +643,92 @@ func TestRefreshProfileUpdatesCard(t *testing.T) {
 
 	if card.FullName != "Ada Lovelace" || card.Birthday != "1815-12-10" {
 		t.Fatalf("profile not saved, got %q / %q", card.FullName, card.Birthday)
+	}
+	if card.StreetAddress != "2350 Monroe Street" || card.ZipCode != "77028" || card.PhoneNumber != "713-375-5326" {
+		t.Fatalf("address fields not saved, got %+v", card)
+	}
+}
+
+func TestRefreshProfileKeepsLatestResultDuringConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDB(t)
+	cardRepo := repository.NewCardRepository(db)
+	eventRepo := repository.NewCardEventRepository(db)
+	if err := cardRepo.CreateMany(context.Background(), []model.Card{
+		{Code: "CDK-PROFILE-CONCURRENT", CardType: model.CardTypeUK, CardLimit: 0, Status: model.CardStatusActivated},
+	}); err != nil {
+		t.Fatalf("seed cards: %v", err)
+	}
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var once sync.Once
+	var callCount int
+	var callMu sync.Mutex
+
+	service := NewCardService(
+		cardRepo,
+		eventRepo,
+		fakeEfuncardClient{},
+		fakeProfileClient{
+			fetchFn: func(ctx context.Context, cardType model.CardType) (meiguodizhi.ProfileResponse, error) {
+				callMu.Lock()
+				callCount++
+				currentCall := callCount
+				callMu.Unlock()
+
+				if currentCall == 1 {
+					once.Do(func() {
+						close(firstStarted)
+					})
+					<-releaseFirst
+					return meiguodizhi.ProfileResponse{
+						FullName: "Old Profile",
+						Birthday: "1999-01-01",
+						Raw:      `{"fullName":"Old Profile","birthday":"1999-01-01"}`,
+					}, nil
+				}
+
+				return meiguodizhi.ProfileResponse{
+					FullName: "New Profile",
+					Birthday: "2001-10-01",
+					Raw:      `{"fullName":"New Profile","birthday":"2001-10-01"}`,
+				}, nil
+			},
+		},
+	)
+
+	firstErrCh := make(chan error, 1)
+	go func() {
+		_, err := service.RefreshProfile(context.Background(), 1)
+		firstErrCh <- err
+	}()
+
+	<-firstStarted
+
+	secondErrCh := make(chan error, 1)
+	go func() {
+		_, err := service.RefreshProfile(context.Background(), 1)
+		secondErrCh <- err
+	}()
+
+	close(releaseFirst)
+
+	if err := <-firstErrCh; err != nil {
+		t.Fatalf("first refresh profile: %v", err)
+	}
+	if err := <-secondErrCh; err != nil {
+		t.Fatalf("second refresh profile: %v", err)
+	}
+
+	card, err := cardRepo.FindByID(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+
+	if card.FullName != "New Profile" || card.Birthday != "2001-10-01" {
+		t.Fatalf("expected latest profile to win, got %q / %q", card.FullName, card.Birthday)
 	}
 }
 

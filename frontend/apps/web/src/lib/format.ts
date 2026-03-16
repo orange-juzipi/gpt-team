@@ -66,6 +66,18 @@ export function cardTypeLabel(type: CardType) {
   }
 }
 
+export function cardCountryLabel(type: CardType) {
+  switch (type) {
+    case "uk":
+      return "英国"
+    case "es":
+      return "西班牙"
+    case "us":
+    default:
+      return "美国"
+  }
+}
+
 export function cardLimitLabel(limit: CardLimit | number) {
   return `${limit} 刀`
 }
