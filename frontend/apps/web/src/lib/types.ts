@@ -8,7 +8,7 @@ export type CardEventType =
   | "three_ds"
   | "identity_refresh"
 
-export type AccountType = "plus" | "business"
+export type AccountType = "plus" | "business" | "codex"
 export type AccountStatus = "normal" | "blocked"
 export type UserRole = "admin" | "member"
 export type MailboxProviderType = "cloudmail" | "duckmail"
@@ -91,6 +91,7 @@ export type AccountPayload = {
   status: AccountStatus
   remark: string
   createMailbox?: boolean
+  useServerTimeSchedule?: boolean
 }
 
 export type AccountEmailRecord = {

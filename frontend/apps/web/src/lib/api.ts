@@ -288,6 +288,29 @@ export const api = {
       method: "DELETE",
     })
   },
+  getSubAccounts(accountId: number) {
+    return request<AccountRecord[]>(`/accounts/${accountId}/subaccounts`)
+  },
+  createSubAccount(accountId: number, payload: AccountPayload) {
+    return request<AccountRecord>(`/accounts/${accountId}/subaccounts`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+  updateSubAccount(accountId: number, subAccountId: number, payload: AccountPayload) {
+    return request<AccountRecord>(
+      `/accounts/${accountId}/subaccounts/${subAccountId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    )
+  },
+  deleteSubAccount(accountId: number, subAccountId: number) {
+    return request<void>(`/accounts/${accountId}/subaccounts/${subAccountId}`, {
+      method: "DELETE",
+    })
+  },
   getUsers() {
     return request<UserRecord[]>("/users")
   },

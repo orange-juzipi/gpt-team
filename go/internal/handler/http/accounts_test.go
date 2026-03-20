@@ -73,6 +73,21 @@ func TestAccountWriteEndpointsRequireAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestSubAccountRoutesAreRegistered(t *testing.T) {
+	t.Parallel()
+
+	router := newTestAccountRouter(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/accounts/1/subaccounts", http.NoBody)
+	attachAuthCookie(t, router, request)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for non-codex parent, got %d", response.Code)
+	}
+}
+
 func newTestAccountRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 

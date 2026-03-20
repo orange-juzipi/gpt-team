@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"gpt-team-api/internal/apperr"
 	"gpt-team-api/internal/integration/mailbox"
@@ -62,6 +63,99 @@ func TestWarrantyRequiresBlockedParent(t *testing.T) {
 		Status:   model.AccountStatusNormal,
 	}); err == nil {
 		t.Fatalf("expected blocked parent requirement")
+	}
+}
+
+func TestSubAccountRequiresCodexParent(t *testing.T) {
+	t.Parallel()
+
+	_, svc := newTestAccountService(t)
+	parent := createAccount(t, svc, AccountInput{
+		Account:  "owner@example.com",
+		Password: "password123",
+		Type:     model.AccountTypeBusiness,
+		Status:   model.AccountStatusNormal,
+	})
+
+	if _, err := svc.CreateSubAccount(context.Background(), parent.ID, AccountInput{
+		Account:  "owner-child@example.com",
+		Password: "password456",
+		Type:     model.AccountTypeBusiness,
+		Status:   model.AccountStatusNormal,
+	}); err == nil {
+		t.Fatalf("expected codex parent requirement")
+	}
+}
+
+func TestSubAccountsAreSeparatedFromWarranties(t *testing.T) {
+	t.Parallel()
+
+	_, svc := newTestAccountService(t)
+	parent := createAccount(t, svc, AccountInput{
+		Account:  "owner@example.com",
+		Password: "password123",
+		Type:     model.AccountTypeCodex,
+		Status:   model.AccountStatusBlocked,
+	})
+
+	if _, err := svc.CreateSubAccount(context.Background(), parent.ID, AccountInput{
+		Account:  "owner-child@example.com",
+		Password: "password456",
+		Type:     model.AccountTypeCodex,
+		Status:   model.AccountStatusNormal,
+	}); err != nil {
+		t.Fatalf("create sub account: %v", err)
+	}
+
+	warranties, err := svc.ListWarranties(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatalf("list warranties: %v", err)
+	}
+	if len(warranties) != 0 {
+		t.Fatalf("expected no warranties, got %d", len(warranties))
+	}
+
+	subAccounts, err := svc.ListSubAccounts(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatalf("list sub accounts: %v", err)
+	}
+	if len(subAccounts) != 1 {
+		t.Fatalf("expected 1 sub account, got %d", len(subAccounts))
+	}
+}
+
+func TestCreateSubAccountUsesServerTimeSchedule(t *testing.T) {
+	t.Parallel()
+
+	_, svc := newTestAccountService(t)
+	parent := createAccount(t, svc, AccountInput{
+		Account:  "owner@example.com",
+		Password: "password123",
+		Type:     model.AccountTypeCodex,
+		Status:   model.AccountStatusNormal,
+	})
+
+	before := time.Now().UTC()
+	account, err := svc.CreateSubAccount(context.Background(), parent.ID, AccountInput{
+		Account:               "child@example.com",
+		Password:              "password456",
+		Type:                  model.AccountTypeCodex,
+		Status:                model.AccountStatusNormal,
+		UseServerTimeSchedule: true,
+	})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("CreateSubAccount: %v", err)
+	}
+
+	if account.StartTime == nil || account.EndTime == nil {
+		t.Fatalf("expected server times to be set")
+	}
+	if !account.StartTime.Equal(*account.EndTime) {
+		t.Fatalf("expected start and end time to match, got %v and %v", account.StartTime, account.EndTime)
+	}
+	if account.StartTime.Before(before.Add(-time.Second)) || account.StartTime.After(after.Add(time.Second)) {
+		t.Fatalf("expected start time to use current server time, got %v", account.StartTime)
 	}
 }
 
@@ -354,13 +448,13 @@ func TestCreateWrapsDuckmailProvisioningErrors(t *testing.T) {
 		t.Fatalf("expected create to fail")
 	}
 
-	if apperr.Status(err) != 502 {
-		t.Fatalf("expected 502, got %d", apperr.Status(err))
+	if apperr.Status(err) != 403 {
+		t.Fatalf("expected 403, got %d", apperr.Status(err))
 	}
 	if apperr.Code(err) != "duckmail_account_create_failed" {
 		t.Fatalf("unexpected code: %s", apperr.Code(err))
 	}
-	if apperr.Message(err) != "DuckMail 邮箱创建失败，请检查邮箱管理中的密钥配置或关闭创建邮箱后重试" {
+	if apperr.Message(err) != "DuckMail 邮箱创建失败：invalid duckmail api key" {
 		t.Fatalf("unexpected message: %s", apperr.Message(err))
 	}
 }

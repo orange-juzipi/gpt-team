@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"gpt-team-api/internal/apperr"
@@ -19,6 +20,7 @@ type Config struct {
 	CloudmailBaseURL     string
 	CloudmailAPIToken    string
 	DuckmailBaseURL      string
+	DuckmailHTTPTimeout  time.Duration
 	AccountEncryptionKey string
 	HTTPTimeout          time.Duration
 }
@@ -34,6 +36,7 @@ func Load() (Config, error) {
 		CloudmailBaseURL:     valueOrDefault("CLOUDMAIL_BASE_URL", "https://puax.cloud"),
 		CloudmailAPIToken:    firstNonEmptyEnv("CLOUDMAIL_API_TOKEN", "CLOUDMAIL_AUTHORIZATION"),
 		DuckmailBaseURL:      valueOrDefault("DUCKMAIL_BASE_URL", "https://api.duckmail.sbs"),
+		DuckmailHTTPTimeout:  durationFromEnv("DUCKMAIL_HTTP_TIMEOUT", 90*time.Second),
 		AccountEncryptionKey: os.Getenv("ACCOUNT_ENCRYPTION_KEY"),
 		HTTPTimeout:          15 * time.Second,
 	}
@@ -66,4 +69,18 @@ func firstNonEmptyEnv(keys ...string) string {
 	}
 
 	return ""
+}
+
+func durationFromEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+
+	return duration
 }

@@ -28,6 +28,17 @@ const accounts: AccountRecord[] = [
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
+  {
+    id: 3,
+    account: "codex@example.com",
+    password: "secret-3",
+    maskedPassword: "s******3",
+    type: "codex",
+    status: "normal",
+    remark: "sub accounts",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
 ]
 
 afterEach(() => {
@@ -46,6 +57,19 @@ describe("AccountTable", () => {
     )
 
     expect(screen.getAllByRole("button", { name: /质保/ })).toHaveLength(1)
+  })
+
+  it("shows the sub account action only for codex accounts", () => {
+    render(
+      <AccountTable
+        accounts={accounts}
+        onEdit={vi.fn()}
+        onDelete={vi.fn().mockResolvedValue(undefined)}
+        onOpenSubAccounts={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByRole("button", { name: /子号管理/ })).toHaveLength(1)
   })
 
   it("reveals the password when toggled", async () => {

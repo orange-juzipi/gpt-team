@@ -16,14 +16,15 @@ type AccountHandler struct {
 }
 
 type accountRequest struct {
-	Account       string  `json:"account"`
-	Password      string  `json:"password"`
-	Type          string  `json:"type"`
-	StartTime     *string `json:"startTime"`
-	EndTime       *string `json:"endTime"`
-	Status        string  `json:"status"`
-	Remark        string  `json:"remark"`
-	CreateMailbox *bool   `json:"createMailbox"`
+	Account               string  `json:"account"`
+	Password              string  `json:"password"`
+	Type                  string  `json:"type"`
+	StartTime             *string `json:"startTime"`
+	EndTime               *string `json:"endTime"`
+	Status                string  `json:"status"`
+	Remark                string  `json:"remark"`
+	CreateMailbox         *bool   `json:"createMailbox"`
+	UseServerTimeSchedule bool    `json:"useServerTimeSchedule"`
 }
 
 func NewAccountHandler(service *service.AccountService) *AccountHandler {
@@ -40,6 +41,10 @@ func (h *AccountHandler) Register(group *gin.RouterGroup) {
 	group.POST("/accounts/:id/warranties", h.createWarranty)
 	group.PUT("/accounts/:id/warranties/:wid", h.updateWarranty)
 	group.DELETE("/accounts/:id/warranties/:wid", h.deleteWarranty)
+	group.GET("/accounts/:id/subaccounts", h.listSubAccounts)
+	group.POST("/accounts/:id/subaccounts", h.createSubAccount)
+	group.PUT("/accounts/:id/subaccounts/:sid", h.updateSubAccount)
+	group.DELETE("/accounts/:id/subaccounts/:sid", h.deleteSubAccount)
 }
 
 func (h *AccountHandler) listAccounts(c *gin.Context) {
@@ -208,6 +213,93 @@ func (h *AccountHandler) deleteWarranty(c *gin.Context) {
 	respondNoContent(c)
 }
 
+func (h *AccountHandler) listSubAccounts(c *gin.Context) {
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	result, err := h.service.ListSubAccounts(c.Request.Context(), id)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	respond(c, http.StatusOK, result)
+}
+
+func (h *AccountHandler) createSubAccount(c *gin.Context) {
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	input, err := bindAccountInput(c)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	result, err := h.service.CreateSubAccount(c.Request.Context(), id, input)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	respond(c, http.StatusCreated, result)
+}
+
+func (h *AccountHandler) updateSubAccount(c *gin.Context) {
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	subAccountID, err := parseID(c.Param("sid"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	input, err := bindAccountInput(c)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	result, err := h.service.UpdateSubAccount(c.Request.Context(), id, subAccountID, input)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	respond(c, http.StatusOK, result)
+}
+
+func (h *AccountHandler) deleteSubAccount(c *gin.Context) {
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	subAccountID, err := parseID(c.Param("sid"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+
+	if err := h.service.DeleteSubAccount(c.Request.Context(), id, subAccountID); err != nil {
+		respondError(c, err)
+		return
+	}
+
+	respondNoContent(c)
+}
+
 func bindAccountInput(c *gin.Context) (service.AccountInput, error) {
 	var request accountRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -225,14 +317,15 @@ func bindAccountInput(c *gin.Context) (service.AccountInput, error) {
 	}
 
 	return service.AccountInput{
-		Account:       request.Account,
-		Password:      request.Password,
-		Type:          model.AccountType(request.Type),
-		StartTime:     startTime,
-		EndTime:       endTime,
-		Status:        model.AccountStatus(request.Status),
-		Remark:        request.Remark,
-		CreateMailbox: resolveCreateMailbox(request.CreateMailbox),
+		Account:               request.Account,
+		Password:              request.Password,
+		Type:                  model.AccountType(request.Type),
+		StartTime:             startTime,
+		EndTime:               endTime,
+		Status:                model.AccountStatus(request.Status),
+		Remark:                request.Remark,
+		CreateMailbox:         resolveCreateMailbox(request.CreateMailbox),
+		UseServerTimeSchedule: request.UseServerTimeSchedule,
 	}, nil
 }
 

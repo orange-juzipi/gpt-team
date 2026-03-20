@@ -87,7 +87,15 @@ export function accountStatusLabel(status: AccountStatus) {
 }
 
 export function accountTypeLabel(type: AccountType) {
-  return type === "business" ? "Business" : "Plus"
+  switch (type) {
+    case "business":
+      return "Business"
+    case "codex":
+      return "Codex"
+    case "plus":
+    default:
+      return "Plus"
+  }
 }
 
 export function eventTypeLabel(type: CardEventType) {

@@ -34,6 +34,21 @@ func (r *AccountRepository) ListChildren(ctx context.Context, parentID uint64) (
 	return accounts, err
 }
 
+func (r *AccountRepository) ListChildrenByRelation(ctx context.Context, parentID uint64, relationType model.AccountRelationType) ([]model.Account, error) {
+	var accounts []model.Account
+	query := r.db.WithContext(ctx).Where("parent_id = ?", parentID)
+	if relationType == model.AccountRelationTypeWarranty {
+		query = query.Where("(relation_type = ? OR relation_type = '' OR relation_type IS NULL)", relationType)
+	} else {
+		query = query.Where("relation_type = ?", relationType)
+	}
+
+	err := query.
+		Order("created_at DESC").
+		Find(&accounts).Error
+	return accounts, err
+}
+
 func (r *AccountRepository) FindByID(ctx context.Context, id uint64) (model.Account, error) {
 	var account model.Account
 	err := r.db.WithContext(ctx).First(&account, id).Error
@@ -54,6 +69,21 @@ func (r *AccountRepository) CountChildren(ctx context.Context, parentID uint64) 
 		Model(&model.Account{}).
 		Where("parent_id = ?", parentID).
 		Count(&count).Error
+	return count, err
+}
+
+func (r *AccountRepository) CountChildrenByRelation(ctx context.Context, parentID uint64, relationType model.AccountRelationType) (int64, error) {
+	var count int64
+	query := r.db.WithContext(ctx).
+		Model(&model.Account{}).
+		Where("parent_id = ?", parentID)
+	if relationType == model.AccountRelationTypeWarranty {
+		query = query.Where("(relation_type = ? OR relation_type = '' OR relation_type IS NULL)", relationType)
+	} else {
+		query = query.Where("relation_type = ?", relationType)
+	}
+
+	err := query.Count(&count).Error
 	return count, err
 }
 

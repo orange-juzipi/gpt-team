@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   generateRandomAccount,
   generateSecurePassword,
+  generateSubAccount,
 } from "@/features/accounts/account-form-helpers"
 
 function createRandomSource(sequence: number[]) {
@@ -46,5 +47,11 @@ describe("account form helpers", () => {
     expect(() => generateSecurePassword(3, createRandomSource([0]))).toThrow(
       "密码长度不能小于 4 位。"
     )
+  })
+
+  it("generates a sub account with the parent suffix", () => {
+    const account = generateSubAccount("owner@beta.test", () => 0)
+
+    expect(account).toBe("aaaaaaaa@beta.test")
   })
 })

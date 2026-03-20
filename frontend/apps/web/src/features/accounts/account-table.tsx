@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Bot,
   Eye,
   EyeOff,
   Mail,
@@ -37,6 +38,7 @@ export function AccountTable({
   onDelete,
   onOpenEmails,
   onOpenWarranty,
+  onOpenSubAccounts,
   deletingId,
   readOnly,
   startTimeSort,
@@ -47,6 +49,7 @@ export function AccountTable({
   onDelete?: (account: AccountRecord) => Promise<void>
   onOpenEmails?: (account: AccountRecord) => void
   onOpenWarranty?: (account: AccountRecord) => void
+  onOpenSubAccounts?: (account: AccountRecord) => void
   deletingId?: number
   readOnly?: boolean
   startTimeSort?: "asc" | "desc"
@@ -72,7 +75,7 @@ export function AccountTable({
 
   return (
     <div className="overflow-x-auto rounded-[28px]">
-      <Table className="min-w-[1350px] table-fixed">
+      <Table className="min-w-[1390px] table-fixed">
         <TableHeader>
           <TableRow className="bg-slate-50/70 hover:bg-slate-50/70">
             <TableHead className="sticky left-0 z-20 w-[230px] min-w-[230px] max-w-[230px] bg-slate-50/95 py-4 text-center shadow-[8px_0_18px_rgba(15,23,42,0.04)]">
@@ -103,7 +106,7 @@ export function AccountTable({
             </TableHead>
             <TableHead className="w-[170px] min-w-[170px] max-w-[170px] py-4 text-center">结束时间</TableHead>
             <TableHead className="w-[140px] min-w-[140px] max-w-[140px] py-4 text-center">备注</TableHead>
-            <TableHead className="sticky right-0 z-20 w-[180px] min-w-[180px] max-w-[180px] bg-slate-50/95 py-4 text-center shadow-[-8px_0_18px_rgba(15,23,42,0.04)]">
+            <TableHead className="sticky right-0 z-20 w-[220px] min-w-[220px] max-w-[220px] bg-slate-50/95 py-4 text-center shadow-[-8px_0_18px_rgba(15,23,42,0.04)]">
               操作
             </TableHead>
           </TableRow>
@@ -168,7 +171,7 @@ export function AccountTable({
                     {account.remark || "无"}
                   </div>
                 </TableCell>
-                <TableCell className="sticky right-0 z-10 w-[180px] min-w-[180px] max-w-[180px] bg-white px-4 py-4 align-middle text-center shadow-[-8px_0_18px_rgba(15,23,42,0.04)]">
+                <TableCell className="sticky right-0 z-10 w-[220px] min-w-[220px] max-w-[220px] bg-white px-4 py-4 align-middle text-center shadow-[-8px_0_18px_rgba(15,23,42,0.04)]">
                   <div className="flex flex-nowrap items-center justify-center gap-1.5">
                     {!readOnly && onEdit ? (
                       <HoverHintButton
@@ -198,6 +201,16 @@ export function AccountTable({
                         onClick={() => onOpenWarranty(account)}
                       >
                         <ShieldPlus className="size-4" />
+                      </HoverHintButton>
+                    ) : null}
+                    {account.type === "codex" && onOpenSubAccounts ? (
+                      <HoverHintButton
+                        hint="子号管理"
+                        size="icon-sm"
+                        variant="outline"
+                        onClick={() => onOpenSubAccounts(account)}
+                      >
+                        <Bot className="size-4" />
                       </HoverHintButton>
                     ) : null}
                     {!readOnly && onDelete ? (

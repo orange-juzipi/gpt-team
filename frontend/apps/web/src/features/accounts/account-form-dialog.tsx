@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useEffect, useMemo, useState } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { useQuery } from "@tanstack/react-query"
 import { z } from "zod"
 
@@ -31,7 +31,7 @@ import {
 const accountSchema = z.object({
   account: z.string().trim().min(1, "账号不能为空"),
   password: z.string().min(1, "密码不能为空"),
-  type: z.enum(["plus", "business"]),
+  type: z.enum(["plus", "business", "codex"]),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
   status: z.enum(["normal", "blocked"]),
@@ -54,18 +54,21 @@ function buildDefaultSchedule(now = new Date()) {
   }
 }
 
-function toFormValues(initial?: AccountRecord): AccountFormValues {
+function toFormValues(
+  initial?: AccountRecord,
+  createDefaults?: Partial<AccountPayload>
+): AccountFormValues {
   if (!initial) {
     const schedule = buildDefaultSchedule()
     return {
-      account: "",
-      password: "",
-      type: "business",
-      startTime: schedule.startTime,
-      endTime: schedule.endTime,
-      status: "normal",
-      remark: "",
-      createMailbox: true,
+      account: createDefaults?.account ?? "",
+      password: createDefaults?.password ?? "",
+      type: createDefaults?.type ?? "business",
+      startTime: toDateTimeLocalValue(createDefaults?.startTime) || schedule.startTime,
+      endTime: toDateTimeLocalValue(createDefaults?.endTime) || schedule.endTime,
+      status: createDefaults?.status ?? "normal",
+      remark: createDefaults?.remark ?? "",
+      createMailbox: createDefaults?.createMailbox ?? true,
     }
   }
 
@@ -85,6 +88,7 @@ export function AccountFormDialog({
   open,
   onOpenChange,
   initialValue,
+  createDefaults,
   title,
   description,
   submitLabel,
@@ -94,6 +98,7 @@ export function AccountFormDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   initialValue?: AccountRecord
+  createDefaults?: Partial<AccountPayload>
   title: string
   description: string
   submitLabel: string
@@ -102,9 +107,13 @@ export function AccountFormDialog({
 }) {
   const form = useForm<AccountFormValues>({
     resolver: zodResolver(accountSchema),
-    defaultValues: toFormValues(initialValue),
+    defaultValues: toFormValues(initialValue, createDefaults),
   })
-  const [randomDomainSuffix, setRandomDomainSuffix] = useState("")
+  const [selectedRandomDomainSuffix, setSelectedRandomDomainSuffix] = useState("")
+  const createMailbox = useWatch({
+    control: form.control,
+    name: "createMailbox",
+  })
 
   const mailboxProvidersQuery = useQuery({
     queryKey: ["mailbox-providers", "random-suffixes"],
@@ -125,23 +134,14 @@ export function AccountFormDialog({
     return [...uniqueSuffixes]
   }, [mailboxProvidersQuery.data])
   const hasMailboxProviders = domainSuffixOptions.length > 0
+  const randomDomainSuffix =
+    hasMailboxProviders && domainSuffixOptions.includes(selectedRandomDomainSuffix)
+      ? selectedRandomDomainSuffix
+      : (domainSuffixOptions[0] ?? "")
 
   useEffect(() => {
-    form.reset(toFormValues(initialValue))
-  }, [form, initialValue, open])
-
-  useEffect(() => {
-    if (!hasMailboxProviders) {
-      setRandomDomainSuffix("")
-      return
-    }
-
-    if (domainSuffixOptions.includes(randomDomainSuffix)) {
-      return
-    }
-
-    setRandomDomainSuffix(domainSuffixOptions[0] ?? "")
-  }, [domainSuffixOptions, hasMailboxProviders, randomDomainSuffix])
+    form.reset(toFormValues(initialValue, createDefaults))
+  }, [createDefaults, form, initialValue, open])
 
   const handleSubmit = form.handleSubmit(async (values) => {
     await onSubmit({
@@ -203,7 +203,7 @@ export function AccountFormDialog({
                   aria-label="随机邮箱后缀"
                   disabled={!hasMailboxProviders}
                   value={randomDomainSuffix}
-                  onChange={(event) => setRandomDomainSuffix(event.target.value)}
+                  onChange={(event) => setSelectedRandomDomainSuffix(event.target.value)}
                 >
                   {hasMailboxProviders ? (
                     domainSuffixOptions.map((suffix) => (
@@ -237,6 +237,7 @@ export function AccountFormDialog({
             <Select aria-label="类型" {...form.register("type")}>
               <option value="plus">Plus</option>
               <option value="business">Business</option>
+              <option value="codex">Codex</option>
             </Select>
           </FormField>
           <FormField label="状态" error={form.formState.errors.status?.message}>
@@ -267,7 +268,7 @@ export function AccountFormDialog({
                     aria-label="创建邮箱"
                     type="checkbox"
                     className="size-4"
-                    checked={form.watch("createMailbox")}
+                    checked={createMailbox}
                     onChange={(event) =>
                       form.setValue("createMailbox", event.target.checked, {
                         shouldDirty: true,
