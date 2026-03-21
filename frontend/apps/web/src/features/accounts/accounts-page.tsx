@@ -16,6 +16,7 @@ import { ConfirmActionDialog } from "@/components/confirm-action-dialog"
 import { useMessage } from "@/components/message-context"
 import { PaginationBar } from "@/components/pagination-bar"
 import { AccountAddressDialog } from "@/features/accounts/account-address-dialog"
+import { buildAccountDeleteDescription } from "@/features/accounts/account-delete-description"
 import { AccountEmailsDialog } from "@/features/accounts/account-emails-dialog"
 import { useAuth } from "@/features/auth/auth-provider"
 import { useFlashMessage } from "@/components/use-flash-message"
@@ -390,11 +391,7 @@ export function AccountsPage() {
             }
           }}
           title="删除账号"
-          description={
-            deletingAccount
-              ? `确认删除账号 ${deletingAccount.account} 吗？`
-              : "确认删除这条账号吗？"
-          }
+          description={buildAccountDeleteDescription(deletingAccount)}
           confirmLabel="删除"
           isPending={deleteMutation.isPending}
           onConfirm={handleDeleteAccount}

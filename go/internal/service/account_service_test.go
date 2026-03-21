@@ -202,6 +202,49 @@ func TestDeleteAccountSoftDeletesChildren(t *testing.T) {
 	}
 }
 
+func TestDeleteCodexAccountSoftDeletesSubAccounts(t *testing.T) {
+	t.Parallel()
+
+	db, svc := newTestAccountService(t)
+	parent := createAccount(t, svc, AccountInput{
+		Account:  "owner@example.com",
+		Password: "password123",
+		Type:     model.AccountTypeCodex,
+		Status:   model.AccountStatusNormal,
+	})
+
+	if _, err := svc.CreateSubAccount(context.Background(), parent.ID, AccountInput{
+		Account:  "owner-child@example.com",
+		Password: "password123",
+		Type:     model.AccountTypeCodex,
+		Status:   model.AccountStatusNormal,
+	}); err != nil {
+		t.Fatalf("create sub account: %v", err)
+	}
+
+	if err := svc.Delete(context.Background(), parent.ID); err != nil {
+		t.Fatalf("delete parent: %v", err)
+	}
+
+	var count int64
+	if err := db.Unscoped().Model(&model.Account{}).Count(&count).Error; err != nil {
+		t.Fatalf("count accounts: %v", err)
+	}
+
+	if count != 2 {
+		t.Fatalf("expected 2 rows to remain in unscoped table, got %d", count)
+	}
+
+	var deletedCount int64
+	if err := db.Unscoped().Model(&model.Account{}).Where("deleted_at IS NOT NULL").Count(&deletedCount).Error; err != nil {
+		t.Fatalf("count deleted accounts: %v", err)
+	}
+
+	if deletedCount != 2 {
+		t.Fatalf("expected both parent and sub account soft deleted, got %d", deletedCount)
+	}
+}
+
 func TestListEmailsUsesAccountAddress(t *testing.T) {
 	t.Parallel()
 
