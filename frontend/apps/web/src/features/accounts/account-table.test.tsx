@@ -46,6 +46,17 @@ afterEach(() => {
 })
 
 describe("AccountTable", () => {
+  it("centers the empty state", () => {
+    render(<AccountTable accounts={[]} />)
+
+    expect(screen.getByText("当前列表为空。")).toHaveClass(
+      "flex",
+      "items-center",
+      "justify-center",
+      "text-center"
+    )
+  })
+
   it("shows the warranty action only for blocked accounts", () => {
     render(
       <AccountTable

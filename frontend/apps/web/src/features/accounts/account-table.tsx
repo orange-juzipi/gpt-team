@@ -67,7 +67,7 @@ export function AccountTable({
 
   if (accounts.length === 0) {
     return (
-      <div className="px-6 py-10 text-sm text-muted-foreground">
+      <div className="flex min-h-[220px] items-center justify-center rounded-[28px] border border-dashed border-slate-200/80 px-6 py-10 text-center text-sm text-muted-foreground">
         当前列表为空。
       </div>
     )
