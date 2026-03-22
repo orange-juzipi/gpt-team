@@ -199,6 +199,7 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 	providerType := model.MailboxProviderTypeCloudmail
 	authEmail := account.Account
 	authPassword := password
+	usesProviderCloudmailCredentials := false
 	if s.mailboxTokens != nil {
 		resolvedConfig, matched, err := s.mailboxTokens.ResolveConfigByAccount(ctx, account.Account)
 		if err != nil {
@@ -209,6 +210,7 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 			if providerType == model.MailboxProviderTypeCloudmail {
 				authEmail = resolvedConfig.AccountEmail
 				authPassword = resolvedConfig.Password
+				usesProviderCloudmailCredentials = authEmail != "" && authEmail != account.Account
 			}
 		}
 	}
@@ -224,6 +226,9 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 	}
 
 	items, err := mailer.ListInboxEmails(ctx, authEmail, authPassword, account.Account)
+	if err != nil && shouldRetryCloudmailWithAccountCredentials(err, providerType, usesProviderCloudmailCredentials) {
+		items, err = s.cloudmailer.ListInboxEmails(ctx, account.Account, password, account.Account)
+	}
 	if err != nil {
 		return AccountEmailList{}, err
 	}
@@ -238,6 +243,26 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 		Account:   account.Account,
 		Items:     emails,
 	}, nil
+}
+
+func shouldRetryCloudmailWithAccountCredentials(err error, providerType model.MailboxProviderType, usesProviderCloudmailCredentials bool) bool {
+	if providerType != model.MailboxProviderTypeCloudmail || !usesProviderCloudmailCredentials {
+		return false
+	}
+
+	status := apperr.Status(err)
+	if status != 400 && status != 401 && status != 403 {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(apperr.Message(err)))
+	if message == "" {
+		return false
+	}
+
+	return strings.Contains(message, "invalid email or password") ||
+		strings.Contains(message, "invalid email") ||
+		strings.Contains(message, "invalid password")
 }
 
 func (s *AccountService) CreateWarranty(ctx context.Context, parentID uint64, input AccountInput) (AccountRecord, error) {
