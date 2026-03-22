@@ -93,7 +93,7 @@ export function AccountEmailsDialog({
                     <TableHead className="w-[220px] min-w-[220px] max-w-[220px]">发件人</TableHead>
                     <TableHead className="w-[280px] min-w-[280px] max-w-[280px]">主题</TableHead>
                     <TableHead className="w-[360px] min-w-[360px] max-w-[360px]">摘要</TableHead>
-                    <TableHead className="w-[200px] min-w-[200px] max-w-[200px]">时间（北京时间）</TableHead>
+                    <TableHead className="w-[200px] min-w-[200px] max-w-[200px]">时间</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
