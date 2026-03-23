@@ -180,6 +180,32 @@ export function AccountsPage() {
     }
   }
 
+  const handleInlineUpdate = async (
+    account: AccountRecord,
+    patch: Partial<Pick<AccountPayload, "status" | "remark">>
+  ) => {
+    try {
+      const updated = await api.updateAccount(account.id, {
+        account: account.account,
+        password: account.password,
+        type: account.type,
+        startTime: account.startTime,
+        endTime: account.endTime,
+        status: patch.status ?? account.status,
+        remark: patch.remark ?? account.remark,
+      })
+
+      queryClient.setQueryData<AccountRecord[]>(["accounts"], (current) =>
+        current?.map((item) => (item.id === updated.id ? updated : item)) ?? current
+      )
+
+      return updated
+    } catch (error) {
+      message.error((error as Error).message)
+      throw error
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -233,7 +259,7 @@ export function AccountsPage() {
           <div>
             <CardTitle>账号列表</CardTitle>
             <CardDescription>
-              状态默认“正常”；改为“已封”后才会出现“质保”操作，Codex 账号会出现“子号”操作。
+              状态和备注可直接在列表内修改；其余字段通过“编辑账号”处理。改为“已封”后才会出现“质保”操作，Codex 账号会出现“子号”操作。
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -311,6 +337,7 @@ export function AccountsPage() {
               onOpenSubAccounts={(account) => setSubAccountParent(account)}
               deletingId={deleteMutation.variables}
               readOnly={!canManage}
+              onInlineUpdate={canManage ? handleInlineUpdate : undefined}
               startTimeSort={startTimeSort}
               onToggleStartTimeSort={() =>
                 setStartTimeSort((current) => (current === "desc" ? "asc" : "desc"))
