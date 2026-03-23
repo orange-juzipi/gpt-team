@@ -77,14 +77,15 @@ type AccountRecord struct {
 }
 
 type AccountInput struct {
-	Account       string
-	Password      string
-	Type          model.AccountType
-	StartTime     *time.Time
-	EndTime       *time.Time
-	Status        model.AccountStatus
-	Remark        string
-	CreateMailbox bool
+	Account               string
+	Password              string
+	Type                  model.AccountType
+	StartTime             *time.Time
+	EndTime               *time.Time
+	Status                model.AccountStatus
+	Remark                string
+	CreateMailbox         bool
+	UseServerTimeSchedule bool
 }
 
 type AccountEmailRecord struct {

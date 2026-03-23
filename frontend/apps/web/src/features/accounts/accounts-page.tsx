@@ -16,10 +16,12 @@ import { ConfirmActionDialog } from "@/components/confirm-action-dialog"
 import { useMessage } from "@/components/message-context"
 import { PaginationBar } from "@/components/pagination-bar"
 import { AccountAddressDialog } from "@/features/accounts/account-address-dialog"
+import { buildAccountDeleteDescription } from "@/features/accounts/account-delete-description"
 import { AccountEmailsDialog } from "@/features/accounts/account-emails-dialog"
 import { useAuth } from "@/features/auth/auth-provider"
 import { useFlashMessage } from "@/components/use-flash-message"
 import { AccountFormDialog } from "@/features/accounts/account-form-dialog"
+import { SubAccountDialog } from "@/features/accounts/sub-account-dialog"
 import { AccountTable } from "@/features/accounts/account-table"
 import { WarrantyDialog } from "@/features/accounts/warranty-dialog"
 import { usePagination } from "@/hooks/use-pagination"
@@ -33,7 +35,7 @@ import type {
 } from "@/lib/types"
 
 const EMPTY_ACCOUNTS: AccountRecord[] = []
-const ACCOUNT_TYPE_FILTERS = ["all", "business", "plus"] as const
+const ACCOUNT_TYPE_FILTERS = ["all", "business", "plus", "codex"] as const
 const ACCOUNT_STATUS_FILTERS = ["all", "normal", "blocked"] as const
 
 type AccountTypeFilter = "all" | AccountType
@@ -50,6 +52,7 @@ export function AccountsPage() {
   const [editingAccount, setEditingAccount] = useState<AccountRecord | undefined>()
   const [emailAccount, setEmailAccount] = useState<AccountRecord | undefined>()
   const [warrantyParent, setWarrantyParent] = useState<AccountRecord | undefined>()
+  const [subAccountParent, setSubAccountParent] = useState<AccountRecord | undefined>()
   const [selectedType, setSelectedType] = useState<AccountTypeFilter>("all")
   const [selectedStatus, setSelectedStatus] = useState<AccountStatusFilter>("all")
   const [startTimeSort, setStartTimeSort] = useState<StartTimeSort>("desc")
@@ -97,16 +100,16 @@ export function AccountsPage() {
 
   const filteredAccounts = useMemo(() => {
     const items = accounts.filter((item) => {
-        if (selectedType !== "all" && item.type !== selectedType) {
-          return false
-        }
+      if (selectedType !== "all" && item.type !== selectedType) {
+        return false
+      }
 
-        if (selectedStatus !== "all" && item.status !== selectedStatus) {
-          return false
-        }
+      if (selectedStatus !== "all" && item.status !== selectedStatus) {
+        return false
+      }
 
-        return true
-      })
+      return true
+    })
 
     return [...items].sort((left, right) => {
       const leftTime = resolveTimeValue(left.startTime)
@@ -124,6 +127,7 @@ export function AccountsPage() {
       all: accounts.length,
       business: accounts.filter((item) => item.type === "business").length,
       plus: accounts.filter((item) => item.type === "plus").length,
+      codex: accounts.filter((item) => item.type === "codex").length,
     }),
     [accounts]
   )
@@ -139,12 +143,14 @@ export function AccountsPage() {
     const blockedCount = accounts.filter((item) => item.status === "blocked").length
     const businessCount = accounts.filter((item) => item.type === "business").length
     const plusCount = accounts.filter((item) => item.type === "plus").length
+    const codexCount = accounts.filter((item) => item.type === "codex").length
 
     return {
       total: accounts.length,
       blocked: blockedCount,
       business: businessCount,
       plus: plusCount,
+      codex: codexCount,
       normal: accounts.length - blockedCount,
       filtered: filteredAccounts.length,
     }
@@ -174,12 +180,39 @@ export function AccountsPage() {
     }
   }
 
+  const handleInlineUpdate = async (
+    account: AccountRecord,
+    patch: Partial<Pick<AccountPayload, "status" | "remark">>
+  ) => {
+    try {
+      const updated = await api.updateAccount(account.id, {
+        account: account.account,
+        password: account.password,
+        type: account.type,
+        startTime: account.startTime,
+        endTime: account.endTime,
+        status: patch.status ?? account.status,
+        remark: patch.remark ?? account.remark,
+      })
+
+      queryClient.setQueryData<AccountRecord[]>(["accounts"], (current) =>
+        current?.map((item) => (item.id === updated.id ? updated : item)) ?? current
+      )
+
+      return updated
+    } catch (error) {
+      message.error((error as Error).message)
+      throw error
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="账号总数" value={metrics.total} />
         <MetricCard label="Business" value={metrics.business} />
         <MetricCard label="Plus" value={metrics.plus} />
+        <MetricCard label="Codex" value={metrics.codex} />
         <MetricCard
           label="当前筛选结果"
           value={metrics.filtered}
@@ -226,7 +259,7 @@ export function AccountsPage() {
           <div>
             <CardTitle>账号列表</CardTitle>
             <CardDescription>
-              状态默认“正常”；改为“已封”后才会出现“质保”操作。
+              状态和备注可直接在列表内修改；其余字段通过“编辑账号”处理。改为“已封”后才会出现“质保”操作，Codex 账号会出现“子号”操作。
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -301,8 +334,10 @@ export function AccountsPage() {
                   : undefined
               }
               onOpenWarranty={(account) => setWarrantyParent(account)}
+              onOpenSubAccounts={(account) => setSubAccountParent(account)}
               deletingId={deleteMutation.variables}
               readOnly={!canManage}
+              onInlineUpdate={canManage ? handleInlineUpdate : undefined}
               startTimeSort={startTimeSort}
               onToggleStartTimeSort={() =>
                 setStartTimeSort((current) => (current === "desc" ? "asc" : "desc"))
@@ -349,6 +384,16 @@ export function AccountsPage() {
         account={warrantyParent}
       />
 
+      <SubAccountDialog
+        open={Boolean(subAccountParent)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSubAccountParent(undefined)
+          }
+        }}
+        account={subAccountParent}
+      />
+
       <AccountEmailsDialog
         open={Boolean(emailAccount)}
         onOpenChange={(open) => {
@@ -373,11 +418,7 @@ export function AccountsPage() {
             }
           }}
           title="删除账号"
-          description={
-            deletingAccount
-              ? `确认删除账号 ${deletingAccount.account} 吗？`
-              : "确认删除这条账号吗？"
-          }
+          description={buildAccountDeleteDescription(deletingAccount)}
           confirmLabel="删除"
           isPending={deleteMutation.isPending}
           onConfirm={handleDeleteAccount}

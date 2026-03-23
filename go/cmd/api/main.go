@@ -29,6 +29,7 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
+	duckmailHTTPClient := &http.Client{Timeout: cfg.DuckmailHTTPTimeout}
 
 	cardRepo := repository.NewCardRepository(database)
 	eventRepo := repository.NewCardEventRepository(database)
@@ -55,7 +56,7 @@ func main() {
 		accountRepo,
 		cipher,
 		cloudmail.NewClient(cfg.CloudmailBaseURL, cfg.CloudmailAPIToken, httpClient),
-		duckmail.NewClient(cfg.DuckmailBaseURL, httpClient),
+		duckmail.NewClient(cfg.DuckmailBaseURL, duckmailHTTPClient),
 		mailboxProviderService,
 	)
 	userService := service.NewUserService(userRepo)

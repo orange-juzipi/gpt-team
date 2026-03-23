@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"gpt-team-api/internal/apperr"
 	"gpt-team-api/internal/integration/mailbox"
@@ -97,11 +99,11 @@ func (s *AccountService) Update(ctx context.Context, id uint64, input AccountInp
 	}
 
 	if account.ParentID != nil {
-		return AccountRecord{}, apperr.BadRequest("account_not_top_level", "warranty accounts must be updated from the warranty endpoints")
+		return AccountRecord{}, apperr.BadRequest("account_not_top_level", "child accounts must be updated from their dedicated endpoints")
 	}
 
 	if account.Status == model.AccountStatusBlocked && input.Status == model.AccountStatusNormal {
-		childrenCount, err := s.accounts.CountChildren(ctx, account.ID)
+		childrenCount, err := s.accounts.CountChildrenByRelation(ctx, account.ID, model.AccountRelationTypeWarranty)
 		if err != nil {
 			return AccountRecord{}, apperr.Internal("account_child_count_failed", "failed to inspect warranty accounts", err)
 		}
@@ -149,13 +151,31 @@ func (s *AccountService) ListWarranties(ctx context.Context, parentID uint64) ([
 		return nil, err
 	}
 
-	if parent.ParentID != nil {
-		return nil, apperr.BadRequest("account_not_parent", "warranties can only be listed for top-level accounts")
+	if err := validateWarrantyParent(parent); err != nil {
+		return nil, err
 	}
 
-	accounts, err := s.accounts.ListChildren(ctx, parentID)
+	accounts, err := s.accounts.ListChildrenByRelation(ctx, parentID, model.AccountRelationTypeWarranty)
 	if err != nil {
 		return nil, apperr.Internal("account_warranty_list_failed", "failed to list warranty accounts", err)
+	}
+
+	return s.toRecords(accounts)
+}
+
+func (s *AccountService) ListSubAccounts(ctx context.Context, parentID uint64) ([]AccountRecord, error) {
+	parent, err := s.findAccount(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateSubAccountParent(parent); err != nil {
+		return nil, err
+	}
+
+	accounts, err := s.accounts.ListChildrenByRelation(ctx, parentID, model.AccountRelationTypeSubAccount)
+	if err != nil {
+		return nil, apperr.Internal("account_subaccount_list_failed", "failed to list sub accounts", err)
 	}
 
 	return s.toRecords(accounts)
@@ -179,6 +199,7 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 	providerType := model.MailboxProviderTypeCloudmail
 	authEmail := account.Account
 	authPassword := password
+	usesProviderCloudmailCredentials := false
 	if s.mailboxTokens != nil {
 		resolvedConfig, matched, err := s.mailboxTokens.ResolveConfigByAccount(ctx, account.Account)
 		if err != nil {
@@ -189,6 +210,7 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 			if providerType == model.MailboxProviderTypeCloudmail {
 				authEmail = resolvedConfig.AccountEmail
 				authPassword = resolvedConfig.Password
+				usesProviderCloudmailCredentials = authEmail != "" && authEmail != account.Account
 			}
 		}
 	}
@@ -204,6 +226,9 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 	}
 
 	items, err := mailer.ListInboxEmails(ctx, authEmail, authPassword, account.Account)
+	if err != nil && shouldRetryCloudmailWithAccountCredentials(err, providerType, usesProviderCloudmailCredentials) {
+		items, err = s.cloudmailer.ListInboxEmails(ctx, account.Account, password, account.Account)
+	}
 	if err != nil {
 		return AccountEmailList{}, err
 	}
@@ -220,47 +245,56 @@ func (s *AccountService) ListEmails(ctx context.Context, accountID uint64) (Acco
 	}, nil
 }
 
+func shouldRetryCloudmailWithAccountCredentials(err error, providerType model.MailboxProviderType, usesProviderCloudmailCredentials bool) bool {
+	if providerType != model.MailboxProviderTypeCloudmail || !usesProviderCloudmailCredentials {
+		return false
+	}
+
+	status := apperr.Status(err)
+	if status != 400 && status != 401 && status != 403 {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(apperr.Message(err)))
+	if message == "" {
+		return false
+	}
+
+	return strings.Contains(message, "invalid email or password") ||
+		strings.Contains(message, "invalid email") ||
+		strings.Contains(message, "invalid password")
+}
+
 func (s *AccountService) CreateWarranty(ctx context.Context, parentID uint64, input AccountInput) (AccountRecord, error) {
 	parent, err := s.findAccount(ctx, parentID)
 	if err != nil {
 		return AccountRecord{}, err
 	}
 
-	if parent.Status != model.AccountStatusBlocked {
-		return AccountRecord{}, apperr.Conflict("warranty_parent_not_blocked", "only blocked accounts can own warranty accounts")
-	}
-
-	if err := validateAccountInput(input); err != nil {
+	if err := validateWarrantyParent(parent); err != nil {
 		return AccountRecord{}, err
 	}
 
-	if input.CreateMailbox {
-		if err := s.createDuckmailAccountIfNeeded(ctx, strings.TrimSpace(input.Account), input.Password); err != nil {
-			return AccountRecord{}, err
-		}
-	}
+	return s.createChildAccount(ctx, parentID, input, model.AccountRelationTypeWarranty, "warranty_create_failed", "failed to create warranty account")
+}
 
-	encrypted, err := s.cipher.Encrypt(input.Password)
+func (s *AccountService) CreateSubAccount(ctx context.Context, parentID uint64, input AccountInput) (AccountRecord, error) {
+	parent, err := s.findAccount(ctx, parentID)
 	if err != nil {
 		return AccountRecord{}, err
 	}
 
-	account := model.Account{
-		Account:            strings.TrimSpace(input.Account),
-		PasswordCiphertext: encrypted,
-		Type:               input.Type,
-		StartTime:          input.StartTime,
-		EndTime:            input.EndTime,
-		Status:             input.Status,
-		Remark:             strings.TrimSpace(input.Remark),
-		ParentID:           &parentID,
+	if err := validateSubAccountParent(parent); err != nil {
+		return AccountRecord{}, err
 	}
 
-	if err := s.accounts.Create(ctx, &account); err != nil {
-		return AccountRecord{}, apperr.Internal("warranty_create_failed", "failed to create warranty account", err)
+	if input.UseServerTimeSchedule {
+		now := time.Now().UTC()
+		input.StartTime = &now
+		input.EndTime = &now
 	}
 
-	return s.toRecord(account)
+	return s.createChildAccount(ctx, parentID, input, model.AccountRelationTypeSubAccount, "subaccount_create_failed", "failed to create sub account")
 }
 
 func (s *AccountService) createDuckmailAccountIfNeeded(ctx context.Context, account, password string) error {
@@ -280,14 +314,25 @@ func (s *AccountService) createDuckmailAccountIfNeeded(ctx context.Context, acco
 	}
 
 	if err := s.duckmailer.CreateAccount(ctx, config.Password, account, password); err != nil {
-		return apperr.Upstream(
-			"duckmail_account_create_failed",
-			"DuckMail 邮箱创建失败，请检查邮箱管理中的密钥配置或关闭创建邮箱后重试",
-			err,
-		)
+		message := resolveDuckmailCreateErrorMessage(err)
+		status := apperr.Status(err)
+		if status >= 400 && status < 500 {
+			return apperr.New(status, "duckmail_account_create_failed", message)
+		}
+
+		return apperr.Upstream("duckmail_account_create_failed", message, err)
 	}
 
 	return nil
+}
+
+func resolveDuckmailCreateErrorMessage(err error) string {
+	upstreamMessage := strings.TrimSpace(apperr.Message(err))
+	if upstreamMessage == "" || upstreamMessage == "internal server error" {
+		return "DuckMail 邮箱创建失败，请检查邮箱管理中的密钥配置或关闭创建邮箱后重试"
+	}
+
+	return fmt.Sprintf("DuckMail 邮箱创建失败：%s", upstreamMessage)
 }
 
 func (s *AccountService) UpdateWarranty(ctx context.Context, parentID, warrantyID uint64, input AccountInput) (AccountRecord, error) {
@@ -296,58 +341,50 @@ func (s *AccountService) UpdateWarranty(ctx context.Context, parentID, warrantyI
 		return AccountRecord{}, err
 	}
 
-	if parent.Status != model.AccountStatusBlocked {
-		return AccountRecord{}, apperr.Conflict("warranty_parent_not_blocked", "only blocked accounts can own warranty accounts")
-	}
-
-	if err := validateAccountInput(input); err != nil {
+	if err := validateWarrantyParent(parent); err != nil {
 		return AccountRecord{}, err
 	}
 
-	account, err := s.findAccount(ctx, warrantyID)
+	return s.updateChildAccount(ctx, parentID, warrantyID, input, model.AccountRelationTypeWarranty, "warranty_not_found", "warranty account not found", "warranty_update_failed", "failed to update warranty account")
+}
+
+func (s *AccountService) UpdateSubAccount(ctx context.Context, parentID, subAccountID uint64, input AccountInput) (AccountRecord, error) {
+	parent, err := s.findAccount(ctx, parentID)
 	if err != nil {
 		return AccountRecord{}, err
 	}
 
-	if account.ParentID == nil || *account.ParentID != parentID {
-		return AccountRecord{}, apperr.NotFound("warranty_not_found", "warranty account not found")
-	}
-
-	encrypted, err := s.cipher.Encrypt(input.Password)
-	if err != nil {
+	if err := validateSubAccountParent(parent); err != nil {
 		return AccountRecord{}, err
 	}
 
-	account.Account = strings.TrimSpace(input.Account)
-	account.PasswordCiphertext = encrypted
-	account.Type = input.Type
-	account.StartTime = input.StartTime
-	account.EndTime = input.EndTime
-	account.Status = input.Status
-	account.Remark = strings.TrimSpace(input.Remark)
-
-	if err := s.accounts.Save(ctx, &account); err != nil {
-		return AccountRecord{}, apperr.Internal("warranty_update_failed", "failed to update warranty account", err)
-	}
-
-	return s.toRecord(account)
+	return s.updateChildAccount(ctx, parentID, subAccountID, input, model.AccountRelationTypeSubAccount, "subaccount_not_found", "sub account not found", "subaccount_update_failed", "failed to update sub account")
 }
 
 func (s *AccountService) DeleteWarranty(ctx context.Context, parentID, warrantyID uint64) error {
-	account, err := s.findAccount(ctx, warrantyID)
+	parent, err := s.findAccount(ctx, parentID)
 	if err != nil {
 		return err
 	}
 
-	if account.ParentID == nil || *account.ParentID != parentID {
-		return apperr.NotFound("warranty_not_found", "warranty account not found")
+	if err := validateWarrantyParent(parent); err != nil {
+		return err
 	}
 
-	if err := s.accounts.DeleteCascade(ctx, warrantyID); err != nil {
-		return apperr.Internal("warranty_delete_failed", "failed to delete warranty account", err)
+	return s.deleteChildAccount(ctx, parentID, warrantyID, model.AccountRelationTypeWarranty, "warranty_not_found", "warranty account not found", "warranty_delete_failed", "failed to delete warranty account")
+}
+
+func (s *AccountService) DeleteSubAccount(ctx context.Context, parentID, subAccountID uint64) error {
+	parent, err := s.findAccount(ctx, parentID)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	if err := validateSubAccountParent(parent); err != nil {
+		return err
+	}
+
+	return s.deleteChildAccount(ctx, parentID, subAccountID, model.AccountRelationTypeSubAccount, "subaccount_not_found", "sub account not found", "subaccount_delete_failed", "failed to delete sub account")
 }
 
 func (s *AccountService) findAccount(ctx context.Context, id uint64) (model.Account, error) {
@@ -373,9 +410,9 @@ func validateAccountInput(input AccountInput) error {
 	}
 
 	switch input.Type {
-	case model.AccountTypePlus, model.AccountTypeBusiness:
+	case model.AccountTypePlus, model.AccountTypeBusiness, model.AccountTypeCodex:
 	default:
-		return apperr.BadRequest("invalid_account_type", "type must be plus or business")
+		return apperr.BadRequest("invalid_account_type", "type must be plus, business or codex")
 	}
 
 	switch input.Status {
@@ -398,6 +435,124 @@ func (s *AccountService) toRecords(accounts []model.Account) ([]AccountRecord, e
 	}
 
 	return items, nil
+}
+
+func (s *AccountService) createChildAccount(ctx context.Context, parentID uint64, input AccountInput, relationType model.AccountRelationType, errorCode, errorMessage string) (AccountRecord, error) {
+	if err := validateAccountInput(input); err != nil {
+		return AccountRecord{}, err
+	}
+
+	if input.CreateMailbox {
+		if err := s.createDuckmailAccountIfNeeded(ctx, strings.TrimSpace(input.Account), input.Password); err != nil {
+			return AccountRecord{}, err
+		}
+	}
+
+	encrypted, err := s.cipher.Encrypt(input.Password)
+	if err != nil {
+		return AccountRecord{}, err
+	}
+
+	account := model.Account{
+		Account:            strings.TrimSpace(input.Account),
+		PasswordCiphertext: encrypted,
+		Type:               input.Type,
+		StartTime:          input.StartTime,
+		EndTime:            input.EndTime,
+		Status:             input.Status,
+		Remark:             strings.TrimSpace(input.Remark),
+		ParentID:           &parentID,
+		RelationType:       relationType,
+	}
+
+	if err := s.accounts.Create(ctx, &account); err != nil {
+		return AccountRecord{}, apperr.Internal(errorCode, errorMessage, err)
+	}
+
+	return s.toRecord(account)
+}
+
+func (s *AccountService) updateChildAccount(ctx context.Context, parentID, accountID uint64, input AccountInput, relationType model.AccountRelationType, notFoundCode, notFoundMessage, errorCode, errorMessage string) (AccountRecord, error) {
+	if err := validateAccountInput(input); err != nil {
+		return AccountRecord{}, err
+	}
+
+	account, err := s.findAccount(ctx, accountID)
+	if err != nil {
+		return AccountRecord{}, err
+	}
+
+	if account.ParentID == nil || *account.ParentID != parentID || !matchesRelationType(account.RelationType, relationType) {
+		return AccountRecord{}, apperr.NotFound(notFoundCode, notFoundMessage)
+	}
+
+	encrypted, err := s.cipher.Encrypt(input.Password)
+	if err != nil {
+		return AccountRecord{}, err
+	}
+
+	account.Account = strings.TrimSpace(input.Account)
+	account.PasswordCiphertext = encrypted
+	account.Type = input.Type
+	account.StartTime = input.StartTime
+	account.EndTime = input.EndTime
+	account.Status = input.Status
+	account.Remark = strings.TrimSpace(input.Remark)
+
+	if err := s.accounts.Save(ctx, &account); err != nil {
+		return AccountRecord{}, apperr.Internal(errorCode, errorMessage, err)
+	}
+
+	return s.toRecord(account)
+}
+
+func (s *AccountService) deleteChildAccount(ctx context.Context, parentID, accountID uint64, relationType model.AccountRelationType, notFoundCode, notFoundMessage, errorCode, errorMessage string) error {
+	account, err := s.findAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+
+	if account.ParentID == nil || *account.ParentID != parentID || !matchesRelationType(account.RelationType, relationType) {
+		return apperr.NotFound(notFoundCode, notFoundMessage)
+	}
+
+	if err := s.accounts.DeleteCascade(ctx, accountID); err != nil {
+		return apperr.Internal(errorCode, errorMessage, err)
+	}
+
+	return nil
+}
+
+func validateWarrantyParent(parent model.Account) error {
+	if parent.ParentID != nil {
+		return apperr.BadRequest("account_not_parent", "warranty accounts can only belong to top-level accounts")
+	}
+
+	if parent.Status != model.AccountStatusBlocked {
+		return apperr.Conflict("warranty_parent_not_blocked", "only blocked accounts can own warranty accounts")
+	}
+
+	return nil
+}
+
+func validateSubAccountParent(parent model.Account) error {
+	if parent.ParentID != nil {
+		return apperr.BadRequest("account_not_parent", "sub accounts can only belong to top-level accounts")
+	}
+
+	if parent.Type != model.AccountTypeCodex {
+		return apperr.Conflict("subaccount_parent_not_codex", "only codex accounts can own sub accounts")
+	}
+
+	return nil
+}
+
+func matchesRelationType(actual, expected model.AccountRelationType) bool {
+	if actual == expected {
+		return true
+	}
+
+	return expected == model.AccountRelationTypeWarranty && actual == ""
 }
 
 func (s *AccountService) toRecord(account model.Account) (AccountRecord, error) {

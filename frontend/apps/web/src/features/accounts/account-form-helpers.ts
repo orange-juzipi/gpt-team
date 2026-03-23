@@ -56,6 +56,24 @@ export function generateRandomAccount(domainSuffix: string, random = Math.random
   return `${prefix}@${domainSuffix}`
 }
 
+export function generateSubAccount(parentAccount: string, random = Math.random) {
+  const length = Math.floor(random() * 3) + 8
+  let suffix = ""
+
+  for (let index = 0; index < length; index += 1) {
+    suffix += ACCOUNT_ALPHABET[Math.floor(random() * ACCOUNT_ALPHABET.length)]
+  }
+
+  const trimmedAccount = parentAccount.trim()
+  const atIndex = trimmedAccount.indexOf("@")
+  if (atIndex <= 0 || atIndex === trimmedAccount.length - 1) {
+    return `${suffix}-${trimmedAccount}`
+  }
+
+  const domain = trimmedAccount.slice(atIndex + 1)
+  return `${suffix}@${domain}`
+}
+
 export function generateSecurePassword(length = 18, randomSource?: RandomSource) {
   if (length < PASSWORD_CHARSETS.length) {
     throw new Error(`密码长度不能小于 ${PASSWORD_CHARSETS.length} 位。`)

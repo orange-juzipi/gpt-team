@@ -24,3 +24,5 @@ export CLOUDMAIL_API_TOKEN='<your-cloudmail-token>'
 
 # DuckMail 邮件服务
 export DUCKMAIL_BASE_URL='https://api.duckmail.sbs'
+# DuckMail 创建账号响应较慢时可调大，例如 90s
+export DUCKMAIL_HTTP_TIMEOUT='90s'

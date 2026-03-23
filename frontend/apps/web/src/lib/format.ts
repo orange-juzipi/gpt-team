@@ -9,17 +9,28 @@ import type {
   UserRole,
 } from "@/lib/types"
 
+const BEIJING_TIME_ZONE = "Asia/Shanghai"
+const BEIJING_OFFSET_HOURS = 8
+
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   dateStyle: "medium",
   timeStyle: "short",
+  timeZone: BEIJING_TIME_ZONE,
 })
 
-export function formatDateTime(value?: string) {
+type DateTimeInputTimeZone = "local" | "utc" | "beijing"
+
+export function formatDateTime(
+  value?: string,
+  options?: {
+    inputTimeZone?: DateTimeInputTimeZone
+  }
+) {
   if (!value) {
     return "未记录"
   }
 
-  const parsed = new Date(value)
+  const parsed = parseDateTime(value, options?.inputTimeZone ?? "local")
   if (Number.isNaN(parsed.getTime())) {
     return value
   }
@@ -32,14 +43,18 @@ export function toDateTimeLocalValue(value?: string) {
     return ""
   }
 
-  const date = new Date(value)
+  const date = parseDateTime(value, "local")
   if (Number.isNaN(date.getTime())) {
     return ""
   }
 
-  const offset = date.getTimezoneOffset()
-  const localDate = new Date(date.getTime() - offset * 60_000)
-  return localDate.toISOString().slice(0, 16)
+  const beijingDate = new Date(date.getTime() + BEIJING_OFFSET_HOURS * 60 * 60_000)
+
+  return [
+    beijingDate.getUTCFullYear(),
+    pad(beijingDate.getUTCMonth() + 1),
+    pad(beijingDate.getUTCDate()),
+  ].join("-") + `T${pad(beijingDate.getUTCHours())}:${pad(beijingDate.getUTCMinutes())}`
 }
 
 export function fromDateTimeLocalValue(value: string) {
@@ -47,7 +62,59 @@ export function fromDateTimeLocalValue(value: string) {
     return undefined
   }
 
-  return new Date(value).toISOString()
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+  )
+  if (!match) {
+    return undefined
+  }
+
+  const [, year, month, day, hour, minute, second = "00"] = match
+  const timestamp = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour) - BEIJING_OFFSET_HOURS,
+    Number(minute),
+    Number(second)
+  )
+
+  return new Date(timestamp).toISOString()
+}
+
+function parseDateTime(value: string, inputTimeZone: DateTimeInputTimeZone) {
+  const trimmed = value.trim()
+  if (trimmed === "") {
+    return new Date(Number.NaN)
+  }
+
+  if (hasExplicitTimeZone(trimmed)) {
+    return new Date(trimmed)
+  }
+
+  const normalized = normalizeDateTime(trimmed)
+
+  switch (inputTimeZone) {
+    case "utc":
+      return new Date(`${normalized}Z`)
+    case "beijing":
+      return new Date(`${normalized}+08:00`)
+    case "local":
+    default:
+      return new Date(trimmed)
+  }
+}
+
+function hasExplicitTimeZone(value: string) {
+  return /(?:[zZ]|[+-]\d{2}:\d{2}|[+-]\d{4})$/.test(value)
+}
+
+function normalizeDateTime(value: string) {
+  return value.includes("T") ? value : value.replace(" ", "T")
+}
+
+function pad(value: number) {
+  return String(value).padStart(2, "0")
 }
 
 export function cardStatusLabel(status: CardStatus) {
@@ -87,7 +154,15 @@ export function accountStatusLabel(status: AccountStatus) {
 }
 
 export function accountTypeLabel(type: AccountType) {
-  return type === "business" ? "Business" : "Plus"
+  switch (type) {
+    case "business":
+      return "Business"
+    case "codex":
+      return "Codex"
+    case "plus":
+    default:
+      return "Plus"
+  }
 }
 
 export function eventTypeLabel(type: CardEventType) {
